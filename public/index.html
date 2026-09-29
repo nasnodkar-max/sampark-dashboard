@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sampark — Constituency Brain</title>
+<style>
+  :root { --indigo:#232a5c; --amber:#f59e0b; --bg:#f4f5fa; --card:#fff; --green:#16a34a; --red:#dc2626; --muted:#6b7280; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:#1f2937; }
+  header { background:var(--indigo); color:#fff; padding:14px 24px; display:flex; align-items:center; gap:16px; position:sticky; top:0; z-index:10; }
+  header .logo { font-weight:800; font-size:20px; letter-spacing:.5px; }
+  header .logo span { color:var(--amber); }
+  header .sub { opacity:.75; font-size:13px; }
+  header .badge { margin-left:auto; font-size:12px; padding:5px 12px; border-radius:20px; background:#374151; }
+  header .badge.ok { background:var(--green); } header .badge.warn { background:var(--amber); color:#1f2937; }
+  .wrap { max-width:1200px; margin:0 auto; padding:20px 24px 60px; }
+  .banner { background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:12px 16px; margin-bottom:16px; font-size:14px; }
+  .card { background:var(--card); border-radius:12px; padding:18px 20px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .card h2 { font-size:16px; margin-bottom:12px; color:var(--indigo); }
+  .tag { font-size:11px; background:#eef2ff; color:var(--indigo); padding:3px 8px; border-radius:12px; margin-left:8px; font-weight:600; vertical-align:middle; }
+  .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px; }
+  .kpi { background:#fff; border-radius:12px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .kpi .v { font-size:26px; font-weight:800; color:var(--indigo); }
+  .kpi .l { font-size:12px; color:var(--muted); margin-top:4px; }
+  .brief li { margin:6px 0 6px 18px; font-size:14px; }
+  .chips { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+  .chip { border:1px solid #d1d5db; background:#fff; border-radius:18px; padding:6px 14px; font-size:13px; cursor:pointer; }
+  .chip.active { background:var(--indigo); color:#fff; border-color:var(--indigo); }
+  .trow { display:flex; gap:12px; align-items:center; padding:12px 8px; border-top:1px solid #f0f0f0; cursor:pointer; border-radius:8px;}
+  .trow:hover { background:#f8fafc; }
+  .trow .id { font-weight:700; font-size:13px; color:var(--indigo); min-width:74px;}
+  .trow .who { min-width:150px; } .trow .who b { display:block; font-size:14px;} .trow .who span{font-size:12px;color:var(--muted);}
+  .trow .msg { flex:1; font-size:13px; color:#374151; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .pill { font-size:11px; padding:3px 10px; border-radius:12px; font-weight:700; white-space:nowrap;}
+  .p-new{background:#fef3c7;color:#92400e;} .p-in_progress{background:#dbeafe;color:#1e40af;}
+  .p-awaiting_citizen{background:#e0e7ff;color:#3730a3;} .p-resolved{background:#dcfce7;color:#166534;}
+  .pr-High{background:#fee2e2;color:#991b1b;} .pr-Medium{background:#f3f4f6;color:#4b5563;}
+  .draft { border:1px solid #e5e7f0; border-left:4px solid var(--amber); border-radius:10px; padding:14px 16px; margin-bottom:12px; background:#fffdf7;}
+  .draft .meta { font-size:12px; color:var(--muted); margin-bottom:8px;}
+  .draft .txt { font-size:14px; background:#fff; border:1px solid #eee; border-radius:8px; padding:10px 12px; margin-bottom:10px;}
+  .btn { border:none; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:700; cursor:pointer; }
+  .btn.primary { background:var(--green); color:#fff; } .btn.ghost { background:#eef2ff; color:var(--indigo); }
+  .btn.warn { background:#fef3c7; color:#92400e; } .btn + .btn { margin-left:8px; }
+  .drawer { position:fixed; top:0; right:0; width:min(460px,100%); height:100%; background:#fff; box-shadow:-4px 0 20px rgba(0,0,0,.15); z-index:50; display:none; flex-direction:column;}
+  .drawer.open { display:flex; }
+  .drawer header2, .dhead { padding:16px 20px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center;}
+  .dhead b { font-size:16px; color:var(--indigo);} .dhead button{background:none;border:none;font-size:20px;cursor:pointer;}
+  .thread { flex:1; overflow-y:auto; padding:16px 20px; background:#f8fafc; display:flex; flex-direction:column; gap:8px;}
+  .bub { max-width:85%; padding:9px 13px; border-radius:12px; font-size:14px; line-height:1.45;}
+  .bub.in { background:#fff; align-self:flex-start; border:1px solid #e5e7eb; border-bottom-left-radius:2px;}
+  .bub.out { background:#dcf8c6; align-self:flex-end; border-bottom-right-radius:2px;}
+  .bub .t { display:block; font-size:10px; color:var(--muted); margin-top:4px; text-align:right;}
+  .dfoot { padding:14px 20px; border-top:1px solid #eee; }
+  .dfoot textarea { width:100%; border:1px solid #d1d5db; border-radius:8px; padding:10px; font-size:14px; min-height:70px; font-family:inherit;}
+  .dfoot .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;}
+  .mixbar { display:flex; align-items:center; gap:10px; margin:8px 0; font-size:13px;}
+  .mixbar .n { width:110px; text-transform:capitalize;}
+  .mixbar .bar { height:10px; background:var(--indigo); border-radius:5px; min-width:4px;}
+  .mixbar .c { color:var(--muted); }
+  details.sim { margin-top:8px; } details.sim summary { cursor:pointer; font-size:13px; color:var(--indigo); font-weight:700;}
+  .simbox { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;}
+  .simbox input { flex:1; min-width:180px; border:1px solid #d1d5db; border-radius:8px; padding:9px 12px; font-size:14px;}
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#111827; color:#fff; padding:12px 22px; border-radius:10px; font-size:14px; z-index:100; display:none;}
+  .empty { color:var(--muted); font-size:14px; padding:18px 4px; }
+  @media (max-width:760px){ .kpis{grid-template-columns:repeat(2,1fr);} .trow .msg{display:none;} }
+</style>
+</head>
+<body>
+<header>
+  <div><div class="logo">SAMPARK <span>·</span></div><div class="sub" id="repsub">Constituency Brain</div></div>
+  <div class="badge warn" id="conn">checking…</div>
+</header>
+<div class="wrap">
+  <div class="banner" id="cfgBanner" style="display:none">⚠️ WhatsApp API not connected — the dashboard works, but sending is disabled. Set <b>WHATSAPP_TOKEN</b> and <b>WHATSAPP_PHONE_NUMBER_ID</b> in <b>.env</b> (see README), then restart.</div>
+
+  <div class="card"><h2>📋 2-Minute Daily Brief</h2><ul class="brief" id="brief"><li>Loading…</li></ul></div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card"><h2>✍️ Approvals — AI drafts, you decide <span class="tag">human approval required</span></h2><div id="approvals"></div></div>
+
+  <div class="card"><h2>📥 Ticket Inbox</h2>
+    <div class="chips" id="chips"></div>
+    <div id="inbox"></div>
+  </div>
+
+  <div class="card"><h2>📊 Issue mix — last 7 days</h2><div id="mix"></div></div>
+
+  <div class="card"><details class="sim"><summary>🧪 Local test simulator (no WhatsApp needed)</summary>
+    <div class="simbox">
+      <input id="simFrom" placeholder="Sender phone, e.g. 919876543210">
+      <input id="simName" placeholder="Name, e.g. Priya Nair">
+      <input id="simText" placeholder="Message text…" style="flex:2">
+      <button class="btn ghost" onclick="simulate()">Inject message</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-top:8px">Simulates an incoming WhatsApp message through the exact same path as the Meta webhook.</div>
+  </details></div>
+</div>
+
+<div class="drawer" id="drawer">
+  <div class="dhead"><b id="dTitle">Ticket</b><button onclick="closeDrawer()">×</button></div>
+  <div class="thread" id="dThread"></div>
+  <div class="dfoot">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">AI DRAFT — edit before approving</div>
+    <textarea id="dDraft"></textarea>
+    <div class="row">
+      <button class="btn primary" onclick="approveCurrent()">Approve &amp; send</button>
+      <button class="btn ghost" onclick="saveDraft()">Save draft</button>
+      <button class="btn warn" onclick="setStatus('awaiting_citizen')">Mark awaiting citizen</button>
+      <button class="btn ghost" onclick="setStatus('resolved')">Mark resolved</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin:10px 0 6px">Or write a reply directly:</div>
+    <div class="row"><input id="dCustom" placeholder="Type a reply…" style="flex:1;border:1px solid #d1d5db;border-radius:8px;padding:9px 12px;font-size:14px"><button class="btn primary" onclick="sendCustom()">Send</button></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+let cur = null, filter = '';
+const $ = id => document.getElementById(id);
+const esc = s => String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function toast(m){ const t=$('toast'); t.textContent=m; t.style.display='block'; setTimeout(()=>t.style.display='none',2600); }
+const statusLabel = s => ({new:'New',in_progress:'In progress',awaiting_citizen:'Awaiting citizen',resolved:'Resolved'}[s]||s);
+
+async function api(p, opt){ const r = await fetch(p, opt); const j = await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.error||('HTTP '+r.status)); return j; }
+
+async function refresh(){
+  try {
+    const h = await api('/api/health');
+    const b = $('conn');
+    b.textContent = h.configured ? '● WhatsApp connected' : '● WhatsApp not connected';
+    b.className = 'badge ' + (h.configured ? 'ok' : 'warn');
+    $('repsub').textContent = 'Constituency Brain · ' + h.rep;
+    $('cfgBanner').style.display = h.configured ? 'none' : 'block';
+  } catch(e){}
+  try {
+    const br = await api('/api/brief');
+    let html = '';
+    html += `<li>🆕 <b>${br.new_today}</b> new ticket${br.new_today==1?'':'s'} in the last 24 hours.</li>`;
+    if (br.spike) html += `<li>📈 Emerging cluster: <b>${esc(br.spike.category)}</b> complaints — ${br.spike.this_week} this week vs ${br.spike.prev_week} last week.</li>`;
+    html += `<li>✍️ <b>${br.pending_drafts.length}</b> AI draft${br.pending_drafts.length==1?'':'s'} awaiting your approval.</li>`;
+    html += `<li>⏳ <b>${br.awaiting_citizen}</b> ticket${br.awaiting_citizen==1?'':'s'} awaiting citizen reply.</li>`;
+    if (br.ai_brief) {
+      $('brief').innerHTML = br.ai_brief.split('\n').map((l) => l.replace(/^[-•*]\s*/, '').trim()).filter(Boolean)
+        .map((l) => `<li>${esc(l)}</li>`).join('')
+        + '<li style="list-style:none;color:var(--muted);font-size:12px;margin-top:8px">— written by AI, refreshes every 15 min</li>';
+    } else {
+      $('brief').innerHTML = html;
+    }
+  } catch(e){ $('brief').innerHTML = '<li>Could not load brief.</li>'; }
+  try {
+    const s = await api('/api/stats');
+    $('kpis').innerHTML = [
+      [s.active, 'Active tickets'], [s.new, 'New (unactioned)'],
+      [s.avg_first_response_sec==null?'—':s.avg_first_response_sec+'s', 'Avg first response'],
+      [s.pending_drafts, 'Drafts awaiting approval'],
+    ].map(([v,l])=>`<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
+    $('mix').innerHTML = s.issue_mix_7d.length ? s.issue_mix_7d.map(m=>{
+      const max = s.issue_mix_7d[0].c;
+      return `<div class="mixbar"><div class="n">${esc(m.category)}</div><div class="bar" style="width:${Math.max(4, m.c/max*220)}px"></div><div class="c">${m.c}</div></div>`;
+    }).join('') : '<div class="empty">No tickets in the last 7 days.</div>';
+  } catch(e){}
+  await loadInbox(); await loadApprovals();
+}
+</script>
+</body>
+</html>
+<script>
+async function loadInbox(){
+  const list = await api('/api/tickets' + (filter ? '?status='+filter : ''));
+  $('inbox').innerHTML = list.length ? list.map(t=>`
+    <div class="trow" onclick="openTicket('${t.id}')">
+      <div class="id">${esc(t.id)}</div>
+      <div class="who"><b>${esc(t.citizen_name||'Citizen')}</b><span>${esc(t.category)}</span></div>
+      <div class="msg">${esc(t.last_message)}</div>
+      <span class="pill pr-${t.priority}">${t.priority}</span>
+      <span class="pill p-${t.status}">${statusLabel(t.status)}</span>
+    </div>`).join('') : '<div class="empty">No tickets here yet.</div>';
+  const chips = [['','All'],['new','New'],['in_progress','In progress'],['awaiting_citizen','Awaiting citizen'],['resolved','Resolved']];
+  $('chips').innerHTML = chips.map(([v,l])=>`<button class="chip ${filter===v?'active':''}" onclick="setFilter('${v}')">${l}</button>`).join('');
+}
+function setFilter(v){ filter=v; loadInbox(); }
+
+async function loadApprovals(){
+  const list = (await api('/api/tickets')).filter(t=>t.pending_draft);
+  $('approvals').innerHTML = list.length ? list.map(t=>`
+    <div class="draft">
+      <div class="meta">${esc(t.id)} · ${esc(t.citizen_name||'Citizen')} · ${esc(t.category)} · ${new Date(t.updated_at).toLocaleString()}${t.draft_source==='ai' ? ' <span class="tag">AI draft</span>' : ' <span class="tag" style="background:#f3f4f6;color:#4b5563">template</span>'}</div>
+      <div class="txt">${esc(t.pending_draft)}</div>
+      <button class="btn primary" onclick="quickApprove('${t.id}')">Approve &amp; send</button>
+      <button class="btn ghost" onclick="openTicket('${t.id}')">Review / edit</button>
+    </div>`).join('') : '<div class="empty">Nothing awaiting approval. New citizen messages generate a draft here automatically.</div>';
+}
+async function quickApprove(id){
+  const t = await api('/api/tickets/'+id);
+  try { await api('/api/tickets/'+id+'/approve', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})}); toast('Reply sent to citizen'); }
+  catch(e){ toast('Send failed: '+e.message); }
+  refresh();
+}
+async function openTicket(id){
+  cur = await api('/api/tickets/'+id);
+  $('dTitle').textContent = cur.id + ' · ' + (cur.citizen_name||'Citizen') + ' · ' + statusLabel(cur.status);
+  $('dThread').innerHTML = cur.messages.map(m=>`<div class="bub ${m.direction}">${esc(m.body)}<span class="t">${new Date(m.created_at).toLocaleString()}</span></div>`).join('');
+  $('dDraft').value = cur.pending_draft || '';
+  $('dCustom').value = '';
+  $('drawer').classList.add('open');
+  $('dThread').scrollTop = $('dThread').scrollHeight;
+}
+function closeDrawer(){ $('drawer').classList.remove('open'); cur=null; }
+async function approveCurrent(){
+  if(!cur) return;
+  try { await api('/api/tickets/'+cur.id+'/approve', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:$('dDraft').value})}); toast('Reply sent to citizen'); closeDrawer(); }
+  catch(e){ toast('Send failed: '+e.message); }
+  refresh();
+}
+async function saveDraft(){
+  if(!cur) return;
+  await api('/api/tickets/'+cur.id+'/draft', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:$('dDraft').value})});
+  toast('Draft saved'); refresh();
+}
+async function sendCustom(){
+  if(!cur) return; const v = $('dCustom').value.trim(); if(!v) return;
+  try { await api('/api/tickets/'+cur.id+'/reply', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:v})}); toast('Reply sent'); }
+  catch(e){ toast('Send failed: '+e.message); }
+  openTicket(cur.id); refresh();
+}
+async function setStatus(s){
+  if(!cur) return;
+  await api('/api/tickets/'+cur.id+'/status', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({status:s})});
+  toast('Marked: '+statusLabel(s)); openTicket(cur.id); refresh();
+}
+async function simulate(){
+  const from=$('simFrom').value.trim(), name=$('simName').value.trim(), text=$('simText').value.trim();
+  if(!from||!text){ toast('Enter a phone number and message'); return; }
+  const r = await api('/api/test/simulate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({from,name,text})});
+  toast('Message injected → ticket '+r.ticket_id); $('simText').value='';
+  refresh();
+}
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDrawer(); });
+refresh(); setInterval(refresh, 5000);
+</script>
