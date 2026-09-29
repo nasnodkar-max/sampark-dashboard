@@ -4,6 +4,7 @@ services:
   - type: web
     name: sampark-dashboard
     runtime: node
+    plan: free
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /api/health
