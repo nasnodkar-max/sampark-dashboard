@@ -108,6 +108,15 @@ try { db.exec("ALTER TABLE tickets ADD COLUMN awaiting_name INTEGER DEFAULT 0");
 try { db.exec("ALTER TABLE tickets ADD COLUMN sensitive INTEGER DEFAULT 1"); } catch (e) { /* already there */ }
 // lightweight migration: mark outbound messages the office auto-sent (vs human-approved)
 try { db.exec("ALTER TABLE messages ADD COLUMN auto INTEGER DEFAULT 0"); } catch (e) { /* already there */ }
+// one-time repair (2026-09-29): the demo seed wrongly flagged synthetic messages as
+// office auto-sends (they never went through WhatsApp) and stamped some with future
+// timestamps, burying real auto-sends in the review log. Synthetic rows carry
+// wa_message_id LIKE 'seed-%'. Safe to re-run: matches nothing once repaired.
+try {
+  const nowMs = Date.now();
+  db.prepare("UPDATE messages SET auto=0 WHERE auto=1 AND wa_message_id LIKE 'seed-%'").run();
+  db.prepare("UPDATE messages SET created_at=? WHERE created_at>?").run(nowMs, nowMs);
+} catch (e) { console.error('auto-sent repair migration failed:', e.message); }
 // ---------- Sampark AI assistant: citizens registry, events, insights ----------
 // Citizens registry: everyone who ever messaged, with onboarding progress.
 db.exec(`
