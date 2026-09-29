@@ -172,7 +172,7 @@ async function loadInbox(){
   $('inbox').innerHTML = list.length ? list.map(t=>`
     <div class="trow" onclick="openTicket('${t.id}')">
       <div class="id">${esc(t.id)}</div>
-      <div class="who"><b>${esc(t.citizen_name||'Citizen')}</b><span>${esc(t.category)}</span></div>
+      <div class="who"><b>${esc(t.citizen_name||'Citizen')}</b><span>${esc(t.category)}${t.awaiting_name ? ' · <b style="color:var(--amber)">awaiting name</b>' : ''}</span></div>
       <div class="msg">${esc(t.last_message)}</div>
       <span class="pill pr-${t.priority}">${t.priority}</span>
       <span class="pill p-${t.status}">${statusLabel(t.status)}</span>
