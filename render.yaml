@@ -1,0 +1,21 @@
+# Render Blueprint — one-click deploy of the Sampark dashboard.
+# In Render: New → Blueprint → point at the repo containing this file.
+services:
+  - type: web
+    name: sampark-dashboard
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: DB_PATH
+        value: ./data/sampark.db
+      - key: REP_NAME
+        value: Arjun Deshpande
+      - key: LLM_PROVIDER
+        value: anthropic
+      - key: ANTHROPIC_MODEL
+        value: claude-haiku-4-5-20251001
+      # Secrets — Render will prompt for these on deploy:
+      - key: WEBHOOK_VERIFY_TOKEN
+        sync: false
