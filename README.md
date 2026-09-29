@@ -1,0 +1,132 @@
+# Sampark — Real WhatsApp Dashboard
+
+A working politician's dashboard wired to the **Meta WhatsApp Cloud API**. Citizens text the
+representative's WhatsApp number → messages arrive via webhook → tickets are auto-created with
+AI-draft replies → the politician (or PA) approves/edits in the dashboard → the reply is sent
+back over WhatsApp. **Text messages only** (voice intake is out of scope for this build).
+
+## What you get
+
+- `server.js` — Express server: Meta webhook receiver, ticket store (SQLite), dashboard REST API,
+  WhatsApp send via Cloud API
+- `public/index.html` — the politician's dashboard: 2-minute daily brief, KPIs, approval queue
+  ("AI drafts, you decide"), ticket inbox with conversation drawer, issue mix, plus a local test
+  simulator
+- Text-only throughout; non-text messages are ignored by the webhook
+
+## 1. Run locally (no WhatsApp needed)
+
+```bash
+cd sampark-dashboard
+npm install
+cp .env.example .env
+# edit .env: set WEBHOOK_VERIFY_TOKEN to any random string
+node server.js
+```
+
+Open http://localhost:3000. The banner will say WhatsApp is not connected — that's expected.
+Use the **🧪 Local test simulator** at the bottom of the dashboard to inject messages, or run:
+
+```bash
+node scripts/test-webhook.js
+```
+
+This exercises webhook verification + an incoming message + ticket/draft creation, exactly as
+Meta would call it.
+
+## 2. Connect the real WhatsApp Cloud API
+
+1. Go to [developers.facebook.com](https://developers.facebook.com) → create an app (type: Business).
+2. Add the **WhatsApp** product. In **API Setup** you'll get:
+   - a **test phone number** (works immediately, can message up to 5 test recipients), or add your
+     own business number under *Phone numbers*,
+   - a temporary **access token**, and the **Phone Number ID**.
+   - For production, create a **system user** token (Business Settings → System users) — it doesn't expire.
+3. Copy to `.env`:
+   - `WHATSAPP_TOKEN=<token>`
+   - `WHATSAPP_PHONE_NUMBER_ID=<phone number id>`
+   - `WEBHOOK_VERIFY_TOKEN=<the same random string as in .env>`
+   - optionally `WHATSAPP_APP_SECRET=<app secret>` (enables webhook signature verification).
+4. Deploy this app somewhere with a **public HTTPS URL** (Render, Railway, Fly.io, or any VPS —
+   Meta cannot reach `localhost`).
+
+## 3. Point Meta's webhook at your server
+
+In Developers → your app → **WhatsApp → Configuration**:
+
+- **Callback URL:** `https://<your-public-host>/webhook`
+- **Verify token:** the same `WEBHOOK_VERIFY_TOKEN` from `.env`
+- Click **Verify and save** (this hits `GET /webhook` — the test script proves it works).
+- Under **Webhook fields**, subscribe to **`messages`**.
+
+Now text the WhatsApp number from a phone: the message lands in the dashboard inbox within
+seconds, a draft appears in Approvals, and approving it sends the reply back over WhatsApp.
+
+## 4. Demo flow (mirrors the PoC)
+
+1. Citizen texts the number → ticket created (`SKT-0001`…), category/priority auto-detected,
+   draft auto-generated.
+2. Dashboard: ticket appears under **New**, draft under **Approvals**.
+3. Politician reviews/edits → **Approve & send** → delivered via Cloud API, ticket → *In progress*.
+4. Office can also send freeform replies, or mark *Awaiting citizen* ("Has it been fixed?
+   Reply 1 or 2") / *Resolved*.
+
+## AI layer (optional)
+
+Without an LLM key the app classifies with keywords and drafts from templates
+(`draft_source: "template"`, badged in the dashboard). Set a key to switch on
+real intelligence:
+
+- `LLM_PROVIDER=anthropic` (default) or `openai`
+- `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`, plus optional `ANTHROPIC_MODEL` / `OPENAI_MODEL`
+
+What the LLM does (`lib/ai.js`):
+
+1. **Classification** — category, priority, and message language (so a Hindi message
+   gets a Hindi draft) for every new ticket; falls back to keywords on any failure.
+2. **Draft replies** — a personalized draft in the citizen's language and the
+   representative's tone lands in the approvals queue; the human still approves.
+3. **Morning brief** — the 2-minute brief is written by the LLM from the live inbox
+   snapshot and cached for 15 minutes (the dashboard polls every 5s, so the brief is
+   never regenerated per poll).
+
+All LLM calls have a 20s timeout and fail open to the template path — the ticket
+flow never breaks because the AI is down.
+
+## Deploy to Render (public HTTPS for the Meta webhook)
+
+Meta only delivers webhooks to a public HTTPS URL, so the server must live on
+a host. `render.yaml` in this repo is a Render Blueprint — one-click deploy:
+
+1. Put this folder in a GitHub repo (all files, including `render.yaml`).
+2. In [Render](https://render.com): **New → Blueprint**, connect the repo.
+   Render reads `render.yaml` and prompts for the secret env vars:
+   `WEBHOOK_VERIFY_TOKEN` (any random string you invent),
+   `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`,
+   `WHATSAPP_APP_SECRET` (optional), `ANTHROPIC_API_KEY`.
+3. Deploy. Your public URL will be `https://sampark-dashboard.onrender.com`
+   (or the name you chose).
+4. In Meta Developers → your app → WhatsApp → Configuration:
+   - Callback URL: `https://<your-service>.onrender.com/webhook`
+   - Verify token: the same `WEBHOOK_VERIFY_TOKEN` string
+   - Click Verify and Save, then Subscribe to the **messages** field.
+5. Message the WhatsApp number → ticket appears in the dashboard → approve the
+   draft → the citizen gets the reply.
+
+Notes:
+- The blueprint includes a 1 GB persistent disk for the SQLite database
+  (`DB_PATH`). Disks need Render's Starter plan ($7/mo); on the free plan
+  remove the `disk:` block and the database resets when the service restarts.
+- Render's free web services sleep after inactivity — the first webhook after a
+  nap takes ~30s to wake. Starter plan avoids this.
+
+## Notes & limits
+
+- **24-hour window:** freeform text replies only work within 24h of the citizen's last message
+  (Meta's rule). Outside that window you must use an approved message *template* — add template
+  sending in `sendWhatsApp()` when you need it.
+- **Drafts are template-based stubs** (`generateDraft()` in server.js) — plug in your LLM drafting
+  service there; the approval flow stays the same.
+- Webhook always returns 200 fast; processing is synchronous and light. For scale, move
+  `handleIncoming` onto a queue.
+- Keep `.env` (tokens) out of git — it's in `.gitignore`.
