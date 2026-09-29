@@ -104,6 +104,10 @@ if (!db.prepare("SELECT v FROM meta WHERE k='next_seq'").get()) {
 try { db.exec("ALTER TABLE tickets ADD COLUMN draft_source TEXT DEFAULT 'template'"); } catch (e) { /* already there */ }
 // lightweight migration: onboarding flag — 1 while we're still waiting for the citizen's name
 try { db.exec("ALTER TABLE tickets ADD COLUMN awaiting_name INTEGER DEFAULT 0"); } catch (e) { /* already there */ }
+// lightweight migration: sensitivity gate — 1 = needs human approval, 0 = safe to auto-reply (fail closed)
+try { db.exec("ALTER TABLE tickets ADD COLUMN sensitive INTEGER DEFAULT 1"); } catch (e) { /* already there */ }
+// lightweight migration: mark outbound messages the office auto-sent (vs human-approved)
+try { db.exec("ALTER TABLE messages ADD COLUMN auto INTEGER DEFAULT 0"); } catch (e) { /* already there */ }
 function nextTicketId() {
   const row = db.prepare("SELECT v FROM meta WHERE k='next_seq'").get();
   const n = parseInt(row.v, 10);
@@ -126,6 +130,35 @@ function detectCategory(text) {
 }
 function detectPriority(text) {
   return /urgent|emergency|accident|fire|hospital|immediately/i.test(text) ? 'High' : 'Medium';
+}
+// Keyword fallback for sensitivity (used when the LLM classifier is unavailable).
+// Anything matching needs human approval; everything else may auto-reply as the office.
+// Fail closed: when in doubt, the caller treats the message as sensitive.
+const SENSITIVE_RE = /rishwat|ghus|ghoos|bhrasht|corrupt|bribe|scam|ghotala|extort|hafta|police|thana|\bfir\b|court|adalat|lawyer|vakil|mukadma|jail|arrest|giraftar|chori|theft|riot|danga|communal|murder|qatl|rape|assault|marpeet|\bbeat\b|threat|dhamki|attack|hamla|stab|chaku|emergency|accident|\bfire\b|hospital|ambulance|donation|chanda|\bmoney\b|paisa|payment|\bupi\b|aadhaar|aadhar|\bpress\b|journalist|patrakar|\bmedia\b|reporter/i;
+function detectSensitive(text) {
+  return SENSITIVE_RE.test(String(text || ''));
+}
+// Auto-reply master switch. Dashboard toggle (meta.auto_reply) wins; env SAMPARK_AUTO_REPLY=off forces off. Default on.
+function autoReplyOn() {
+  const row = db.prepare("SELECT v FROM meta WHERE k='auto_reply'").get();
+  if (row) return row.v === '1';
+  return process.env.SAMPARK_AUTO_REPLY !== 'off';
+}
+// Try to send a reply immediately as the office. Returns true on success, false on
+// any failure (caller must then queue the text as a pending draft for approval).
+async function tryAutoSend(ticket, text, newStatus) {
+  try {
+    const wa = await sendWhatsApp(ticket.wa_id, text);
+    db.prepare('INSERT INTO messages (ticket_id, direction, body, wa_message_id, auto, created_at) VALUES (?,?,?,?,1,?)')
+      .run(ticket.id, 'out', text, wa.messages?.[0]?.id || null, Date.now());
+    db.prepare('UPDATE tickets SET pending_draft=NULL, draft_source=NULL, status=?, updated_at=? WHERE id=?')
+      .run(newStatus, Date.now(), ticket.id);
+    console.log(`[${new Date().toISOString()}] AUTO-SENT ${ticket.id}: ${text.slice(0, 70)}`);
+    return true;
+  } catch (e) {
+    console.error('auto-send failed, queuing for approval:', e.message);
+    return false;
+  }
 }
 // Template for the onboarding ask: a first-time citizen is asked for their name.
 function nameRequestDraft() {
@@ -172,41 +205,55 @@ async function handleIncoming({ waId, name, text, waMessageId, ts }) {
     let category = detectCategory(text);
     let priority = detectPriority(text);
     let language = null;
+    let sensitive = true; // fail closed: uncertain -> needs human approval
     try {
       const cls = await ai.classifyMessage(text); // null when no API key -> keyword fallback stands
       if (cls) {
         category = cls.category || category;
         priority = cls.priority || priority;
         language = cls.language || null;
+        sensitive = cls.sensitive !== false;
+      } else {
+        sensitive = detectSensitive(text);
       }
-    } catch (e) { console.error('AI classify failed, using keywords:', e.message); }
+    } catch (e) { console.error('AI classify failed, using keywords:', e.message); sensitive = detectSensitive(text); }
     // Returning citizen? Reuse the name we already captured — don't ask again.
     const known = db.prepare("SELECT citizen_name FROM tickets WHERE wa_id=? AND citizen_name IS NOT NULL AND citizen_name != '' ORDER BY updated_at DESC LIMIT 1").get(waId);
     const awaitingName = known ? 0 : 1;
-    ticket = {
-      id, wa_id: waId, citizen_name: known ? known.citizen_name : name, category,
-      priority, status: 'new', awaiting_name: awaitingName,
-      pending_draft: null, created_at: ts || now, updated_at: now,
-    };
+    db.prepare(`INSERT INTO tickets (id, wa_id, citizen_name, category, priority, sensitive, status, awaiting_name, pending_draft, draft_source, created_at, updated_at)
+                VALUES (?,?,?,?,?,?, 'new', ?, NULL, NULL, ?, ?)`)
+      .run(id, waId, known ? known.citizen_name : name, category, priority, sensitive ? 1 : 0, awaitingName, ts || now, now);
+    ticket = db.prepare('SELECT * FROM tickets WHERE id=?').get(id);
+    const autoOn = autoReplyOn();
     if (awaitingName) {
-      // First contact: the agent asks for the citizen's name (politician still approves the send).
-      ticket.pending_draft = nameRequestDraft();
-      ticket.draft_source = 'template';
+      // First contact: the name request goes out AUTOMATICALLY as the office — no approval needed.
+      let askText = nameRequestDraft();
+      let src = 'template';
       try {
         const aiAsk = await ai.generateNameRequest({ repName: REP_NAME, language });
-        if (aiAsk) { ticket.pending_draft = aiAsk; ticket.draft_source = 'ai'; }
+        if (aiAsk) { askText = aiAsk; src = 'ai'; }
       } catch (e) { console.error('AI name-request failed, using template:', e.message); }
+      const sent = autoOn && await tryAutoSend(ticket, askText, 'new');
+      if (!sent) {
+        db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, updated_at=? WHERE id=?').run(askText, src, Date.now(), id);
+        ticket.pending_draft = askText; ticket.draft_source = src;
+      }
     } else {
-      ticket.pending_draft = generateDraft(ticket, text); // template fallback
-      ticket.draft_source = 'template';
+      // Known citizen: sensitive topics need approval; routine ones auto-reply as the office.
+      let draftText = generateDraft(ticket, text); // template fallback
+      let src = 'template';
       try {
         const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text });
-        if (aiDraft) { ticket.pending_draft = aiDraft; ticket.draft_source = 'ai'; }
+        if (aiDraft) { draftText = aiDraft; src = 'ai'; }
       } catch (e) { console.error('AI draft failed, using template:', e.message); }
+      const sent = !sensitive && autoOn && await tryAutoSend(ticket, draftText, 'in_progress');
+      if (sent) {
+        ticket.status = 'in_progress';
+      } else {
+        db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, updated_at=? WHERE id=?').run(draftText, src, Date.now(), id);
+        ticket.pending_draft = draftText; ticket.draft_source = src;
+      }
     }
-    db.prepare(`INSERT INTO tickets (id, wa_id, citizen_name, category, priority, status, awaiting_name, pending_draft, draft_source, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(id, waId, ticket.citizen_name, ticket.category, ticket.priority, 'new', awaitingName, ticket.pending_draft, ticket.draft_source, ticket.created_at, now);
   } else if (ticket.awaiting_name) {
     // Citizen answered the name request — try to capture their name.
     let captured = null;
@@ -214,33 +261,40 @@ async function handleIncoming({ waId, name, text, waMessageId, ts }) {
     if (!captured) captured = fallbackName(text);
     const status = ticket.status === 'awaiting_citizen' ? 'in_progress' : ticket.status;
     if (captured) {
-      // Name captured: draft the reply to their ORIGINAL issue, personalized.
+      // Name captured: reply to their ORIGINAL issue, personalized.
+      // Sensitive topics -> approval queue; routine ones -> auto-reply as the office.
       const first = db.prepare("SELECT body FROM messages WHERE ticket_id=? AND direction='in' ORDER BY id ASC LIMIT 1").get(ticket.id);
       const issueText = first?.body || text;
       ticket.citizen_name = captured;
       ticket.awaiting_name = 0;
-      ticket.pending_draft = generateDraft(ticket, issueText);
-      ticket.draft_source = 'template';
+      let draftText = generateDraft({ ...ticket, citizen_name: captured }, issueText);
+      let src = 'template';
       try {
         const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: captured, category: ticket.category, language: null, text: issueText });
-        if (aiDraft) { ticket.pending_draft = aiDraft; ticket.draft_source = 'ai'; }
+        if (aiDraft) { draftText = aiDraft; src = 'ai'; }
       } catch (e) { console.error('AI draft failed, using template:', e.message); }
+      const sent = !ticket.sensitive && autoReplyOn() && await tryAutoSend(ticket, draftText, status);
       db.prepare('UPDATE tickets SET citizen_name=?, awaiting_name=0, pending_draft=?, draft_source=?, status=?, updated_at=? WHERE id=?')
-        .run(captured, ticket.pending_draft, ticket.draft_source, status, now, ticket.id);
+        .run(captured, sent ? null : draftText, sent ? null : src, status, now, ticket.id);
+      ticket.pending_draft = sent ? null : draftText;
+      ticket.draft_source = sent ? null : src;
       ticket.status = status;
     } else {
       // Not a name. Ask at most twice, then stop and treat it as a normal ticket.
       const inCount = db.prepare("SELECT COUNT(*) c FROM messages WHERE ticket_id=? AND direction='in'").get(ticket.id).c;
       if (inCount >= 2) {
         ticket.awaiting_name = 0;
-        ticket.pending_draft = generateDraft(ticket, text);
-        ticket.draft_source = 'template';
+        let draftText = generateDraft(ticket, text);
+        let src = 'template';
         try {
           const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category: ticket.category, language: null, text });
-          if (aiDraft) { ticket.pending_draft = aiDraft; ticket.draft_source = 'ai'; }
+          if (aiDraft) { draftText = aiDraft; src = 'ai'; }
         } catch (e) { console.error('AI draft failed, using template:', e.message); }
+        const sent = !ticket.sensitive && autoReplyOn() && await tryAutoSend(ticket, draftText, status);
         db.prepare('UPDATE tickets SET awaiting_name=0, pending_draft=?, draft_source=?, status=?, updated_at=? WHERE id=?')
-          .run(ticket.pending_draft, ticket.draft_source, status, now, ticket.id);
+          .run(sent ? null : draftText, sent ? null : src, status, now, ticket.id);
+        ticket.pending_draft = sent ? null : draftText;
+        ticket.draft_source = sent ? null : src;
         ticket.status = status;
       } else {
         db.prepare('UPDATE tickets SET updated_at=?, status=? WHERE id=?').run(now, status, ticket.id);
@@ -332,7 +386,7 @@ app.post('/webhook', express.json({ verify: (req, _res, buf) => { req.rawBody = 
 
 // ---------- dashboard API ----------
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, configured: CONFIGURED, rep: REP_NAME, now: Date.now(), ai: { configured: ai.isConfigured(), provider: ai.provider } });
+  res.json({ ok: true, configured: CONFIGURED, rep: REP_NAME, now: Date.now(), auto_reply: autoReplyOn(), ai: { configured: ai.isConfigured(), provider: ai.provider } });
 });
 
 // Politician-portal login (public). Sets an httpOnly auth cookie on success.
@@ -426,6 +480,23 @@ app.post('/api/tickets/:id/status', express.json(), (req, res) => {
   res.json({ ok: true });
 });
 
+// Auto-reply master switch (dashboard toggle). Persists in meta; default on.
+app.post('/api/settings/auto-reply', express.json(), (req, res) => {
+  const v = req.body.enabled ? '1' : '0';
+  db.prepare('INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)').run('auto_reply', v);
+  res.json({ ok: true, auto_reply: v === '1' });
+});
+
+// Recently auto-sent office replies, for politician review.
+app.get('/api/auto-sent', (req, res) => {
+  const rows = db.prepare(`
+    SELECT m.ticket_id, m.body, m.created_at, t.citizen_name, t.category, t.sensitive
+    FROM messages m JOIN tickets t ON t.id = m.ticket_id
+    WHERE m.direction='out' AND m.auto=1
+    ORDER BY m.created_at DESC LIMIT 20`).all();
+  res.json(rows);
+});
+
 app.get('/api/stats', (_req, res) => {
   const total = db.prepare('SELECT COUNT(*) c FROM tickets').get().c;
   const active = db.prepare("SELECT COUNT(*) c FROM tickets WHERE status != 'resolved'").get().c;
@@ -442,7 +513,8 @@ app.get('/api/stats', (_req, res) => {
     : null;
   const week = Date.now() - 7 * 864e5;
   const mix = db.prepare('SELECT category, COUNT(*) c FROM tickets WHERE created_at>? GROUP BY category ORDER BY c DESC').all(week);
-  res.json({ total, active, new: fresh, resolved, pending_drafts: drafts, avg_first_response_sec: avgResp, issue_mix_7d: mix });
+  const autoSent24h = db.prepare("SELECT COUNT(*) c FROM messages WHERE direction='out' AND auto=1 AND created_at>?").get(Date.now() - 864e5).c;
+  res.json({ total, active, new: fresh, resolved, pending_drafts: drafts, avg_first_response_sec: avgResp, issue_mix_7d: mix, auto_sent_24h: autoSent24h });
 });
 
 app.get('/api/brief', async (_req, res) => {
@@ -450,6 +522,7 @@ app.get('/api/brief', async (_req, res) => {
   const newToday = db.prepare('SELECT COUNT(*) c FROM tickets WHERE created_at>?').get(day).c;
   const drafts = db.prepare("SELECT id, citizen_name, category FROM tickets WHERE pending_draft IS NOT NULL ORDER BY updated_at DESC LIMIT 5").all();
   const awaiting = db.prepare("SELECT COUNT(*) c FROM tickets WHERE status='awaiting_citizen'").get().c;
+  const autoSent = db.prepare("SELECT COUNT(*) c FROM messages WHERE direction='out' AND auto=1 AND created_at>?").get(day).c;
   const week = Date.now() - 7 * 864e5;
   const prev = Date.now() - 14 * 864e5;
   const top = db.prepare('SELECT category, COUNT(*) c FROM tickets WHERE created_at>? GROUP BY category ORDER BY c DESC LIMIT 1').get(week);
@@ -464,13 +537,14 @@ app.get('/api/brief', async (_req, res) => {
       const fresh = await ai.generateBrief({ repName: REP_NAME, input: {
         new_today: newToday,
         awaiting_citizen: awaiting,
+        auto_sent_24h: autoSent,
         spike,
         pending_drafts: drafts.map((d) => ({ id: d.id, citizen: d.citizen_name, category: d.category })),
       }});
       if (fresh) { briefCache = { text: fresh, at: Date.now() }; aiBrief = fresh; }
     } catch (e) { console.error('brief AI error:', e.message); }
   }
-  res.json({ new_today: newToday, pending_drafts: drafts, awaiting_citizen: awaiting, spike, ai_brief: aiBrief, ai_configured: ai.isConfigured() });
+  res.json({ new_today: newToday, pending_drafts: drafts, awaiting_citizen: awaiting, auto_sent_24h: autoSent, spike, ai_brief: aiBrief, ai_configured: ai.isConfigured() });
 });
 
 // Local test simulator: injects a message exactly as if it came from WhatsApp (no Meta needed)
