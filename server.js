@@ -129,20 +129,26 @@ try { db.exec("ALTER TABLE tickets ADD COLUMN issue_address TEXT"); } catch (e) 
 try { db.exec("ALTER TABLE tickets ADD COLUMN event_datetime TEXT"); } catch (e) { /* already there */ }
 try { db.exec("ALTER TABLE tickets ADD COLUMN venue TEXT"); } catch (e) { /* already there */ }
 // Daily AI insights: top-10 constituency topics refreshed every day.
+// source = 'issues' (from ticket data) or 'web' (from web research); urls holds
+// JSON [{title,url}] for web insights.
 db.exec(`
 CREATE TABLE IF NOT EXISTS insights (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   day TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'issues',
   rank INTEGER NOT NULL,
   topic TEXT NOT NULL,
   summary TEXT,
   ticket_count INTEGER DEFAULT 0,
   trend TEXT DEFAULT 'stable',
   suggested_action TEXT,
+  urls TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_insights_day ON insights(day);
 `);
+try { db.exec("ALTER TABLE insights ADD COLUMN source TEXT DEFAULT 'issues'"); } catch (e) { /* already there */ }
+try { db.exec("ALTER TABLE insights ADD COLUMN urls TEXT"); } catch (e) { /* already there */ }
 // Politician's chat history with the Sampark AI assistant.
 db.exec(`
 CREATE TABLE IF NOT EXISTS ai_chats (
@@ -631,9 +637,10 @@ app.get('/api/events', (req, res) => {
 
 // ---------- Sampark AI assistant: daily insights + politician chat ----------
 // Aggregate 30-day stats and ask Claude for the top-10 topics with actions.
-async function refreshInsights(force = false) {
+// Source 'issues': grounded in the constituency's own ticket data.
+async function refreshIssueInsights(force = false) {
   const today = new Date().toISOString().slice(0, 10);
-  if (!force && db.prepare('SELECT COUNT(*) c FROM insights WHERE day=?').get(today).c) {
+  if (!force && db.prepare("SELECT COUNT(*) c FROM insights WHERE day=? AND source='issues'").get(today).c) {
     return { ok: true, cached: true, day: today };
   }
   const month = Date.now() - 30 * 864e5, prev = Date.now() - 60 * 864e5;
@@ -663,14 +670,38 @@ async function refreshInsights(force = false) {
       suggested_action: 'Review the open tickets with the ward team this week.',
     }));
   }
-  db.prepare('DELETE FROM insights WHERE day=?').run(today);
-  const ins = db.prepare('INSERT INTO insights (day, rank, topic, summary, ticket_count, trend, suggested_action, created_at) VALUES (?,?,?,?,?,?,?,?)');
-  topics.slice(0, 10).forEach((t, i) => ins.run(today, i + 1, t.topic || 'Topic', t.summary || '', t.ticket_count || 0, t.trend || 'stable', t.suggested_action || '', Date.now()));
-  markBriefDirty();
+  db.prepare("DELETE FROM insights WHERE day=? AND source='issues'").run(today);
+  const ins = db.prepare("INSERT INTO insights (day, source, rank, topic, summary, ticket_count, trend, suggested_action, created_at) VALUES (?,?,?,?,?,?,?,?,?)");
+  topics.slice(0, 10).forEach((t, i) => ins.run(today, 'issues', i + 1, t.topic || 'Topic', t.summary || '', t.ticket_count || 0, t.trend || 'stable', t.suggested_action || '', Date.now()));
   return { ok: true, day: today, count: Math.min(topics.length, 10), ai: viaAI };
 }
 
-// Latest insights; cold start waits for the first build, later refreshes happen in background.
+// Source 'web': Claude researches recent Margao/Goa news via web search and
+// turns it into actionable constituency insights with source links.
+async function refreshWebInsights(force = false) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (!force && db.prepare("SELECT COUNT(*) c FROM insights WHERE day=? AND source='web'").get(today).c) {
+    return { ok: true, cached: true, day: today };
+  }
+  let items = null;
+  try { items = await ai.gatherWebInsights({ repName: REP_NAME }); } catch (e) { console.error('web insights AI failed:', e.message); }
+  if (!items || !items.length) return { ok: true, day: today, count: 0, ai: false, empty: true };
+  db.prepare("DELETE FROM insights WHERE day=? AND source='web'").run(today);
+  const ins = db.prepare("INSERT INTO insights (day, source, rank, topic, summary, ticket_count, trend, suggested_action, urls, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)");
+  items.forEach((t, i) => ins.run(today, 'web', i + 1, t.topic, t.summary, 0, t.trend, t.suggested_action, JSON.stringify(t.sources || []), Date.now()));
+  return { ok: true, day: today, count: items.length, ai: true };
+}
+
+// Refresh both insight sources; runs daily at 06:00 and lazily on GET /api/insights.
+async function refreshInsights(force = false) {
+  const [issues, web] = await Promise.all([refreshIssueInsights(force), refreshWebInsights(force)]);
+  markBriefDirty();
+  const today = new Date().toISOString().slice(0, 10);
+  return { ok: true, day: today, issues, web };
+}
+
+// Latest insights, split by source; cold start waits for the first build,
+// later refreshes happen in background.
 app.get('/api/insights', async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   let day = db.prepare('SELECT MAX(day) d FROM insights').get().d;
@@ -682,8 +713,8 @@ app.get('/api/insights', async (req, res) => {
     refreshing = true;
     refreshInsights().catch((e) => console.error('background insights refresh failed:', e.message));
   }
-  const rows = day ? db.prepare('SELECT * FROM insights WHERE day=? ORDER BY rank').all(day) : [];
-  res.json({ day, refreshing, insights: rows });
+  const bySource = (source) => day ? db.prepare('SELECT * FROM insights WHERE day=? AND source=? ORDER BY rank').all(day, source) : [];
+  res.json({ day, refreshing, issues: bySource('issues'), web: bySource('web') });
 });
 
 app.post('/api/admin/refresh-insights', express.json(), async (_req, res) => {
@@ -700,7 +731,7 @@ function buildAssistantContext() {
     tickets_by_status: db.prepare('SELECT status, COUNT(*) c FROM tickets GROUP BY status').all(),
     tickets_by_kind: db.prepare('SELECT kind, COUNT(*) c FROM tickets GROUP BY kind').all(),
     top_categories_30d: db.prepare('SELECT category, COUNT(*) c FROM tickets WHERE created_at>? GROUP BY category ORDER BY c DESC LIMIT 12').all(month),
-    latest_insights: db.prepare('SELECT rank, topic, summary, ticket_count, trend, suggested_action FROM insights WHERE day=(SELECT MAX(day) FROM insights) ORDER BY rank').all(),
+    latest_insights: db.prepare("SELECT rank, topic, summary, ticket_count, trend, suggested_action FROM insights WHERE source='issues' AND day=(SELECT MAX(day) FROM insights WHERE source='issues') ORDER BY rank").all(),
     upcoming_events: db.prepare("SELECT id, citizen_name, event_datetime, venue, status FROM tickets WHERE kind='event' AND status != 'resolved' ORDER BY updated_at DESC LIMIT 8").all(),
     open_high_priority: db.prepare("SELECT id, citizen_name, category, kind, status FROM tickets WHERE priority='High' AND status != 'resolved' ORDER BY updated_at DESC LIMIT 5").all(),
   };

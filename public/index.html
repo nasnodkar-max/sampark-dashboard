@@ -56,6 +56,8 @@
   .insight .body { flex:1; } .insight .body b { font-size:15px; }
   .insight .sum { font-size:13px; color:#374151; margin:4px 0; }
   .insight .act { font-size:13px; background:#f0fdf4; border-left:3px solid var(--green); padding:8px 10px; border-radius:0 8px 8px 0; margin-top:6px;}
+  .insight .srcs { font-size:12px; color:var(--muted); margin-top:6px; }
+  .insight .srcs a { color:var(--indigo); }
   .ev { border:1px solid #e5e7f0; border-radius:10px; padding:14px 16px; margin-bottom:10px; display:flex; gap:12px; align-items:center;}
   .ev .when { min-width:120px; } .ev .when b { display:block; font-size:14px; color:#9d174d;} .ev .when span{font-size:12px;color:var(--muted);}
   .ev .what { flex:1; font-size:14px; } .ev .what span{display:block;font-size:12px;color:var(--muted);margin-top:2px;}
@@ -156,10 +158,13 @@
   </div>
 
   <div class="tabpage" id="page-insights">
-    <div class="card"><h2>💡 Constituency Insights <span class="tag">top 10 topics · refreshed daily by AI</span>
+    <div class="card"><h2>💡 Constituency Insights <span class="tag">refreshed daily by AI</span>
       <span style="float:right"><button class="btn ghost" onclick="refreshInsights(true)">↻ Refresh now</button></span></h2>
       <div id="insMeta" style="font-size:12px;color:var(--muted);margin-bottom:12px"></div>
+      <h3 style="margin:4px 0 10px">📋 From constituency issues <span class="tag">top 10 · last 30 days of tickets</span></h3>
       <div id="insList"></div>
+      <h3 style="margin:20px 0 10px">🌐 From the web <span class="tag">recent Margao &amp; Goa news, researched by AI</span></h3>
+      <div id="webInsList"></div>
     </div>
   </div>
 
@@ -356,7 +361,8 @@ async function loadInsights(force){
     const r = force ? await api('/api/admin/refresh-insights', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}) : null;
     const d = await api('/api/insights');
     $('insMeta').textContent = d.day ? `For ${d.day}${d.refreshing ? ' · updating in the background…' : ' · refreshed daily at 6 AM'}` : 'No data yet — message data will appear here.';
-    $('insList').innerHTML = d.insights.length ? d.insights.map(i=>`
+    const issues = d.issues || [], web = d.web || [];
+    $('insList').innerHTML = issues.length ? issues.map(i=>`
       <div class="insight">
         <div class="rank">${i.rank}</div>
         <div class="body">
@@ -365,6 +371,19 @@ async function loadInsights(force){
           <div class="act">👉 ${esc(i.suggested_action)}</div>
         </div>
       </div>`).join('') : '<div class="empty">Not enough ticket data yet.</div>';
+    $('webInsList').innerHTML = web.length ? web.map(i=>{
+      let srcs = [];
+      try { srcs = JSON.parse(i.urls || '[]'); } catch(e){}
+      return `
+      <div class="insight">
+        <div class="rank">🌐</div>
+        <div class="body">
+          <b>${esc(i.topic)}</b> <span class="pill tr-${i.trend}">${i.trend}</span>
+          <div class="sum">${esc(i.summary)}</div>
+          <div class="act">👉 ${esc(i.suggested_action)}</div>
+          ${srcs.length ? `<div class="srcs">Sources: ${srcs.map(s=>`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title||s.url)}</a>`).join(' · ')}</div>` : ''}
+        </div>
+      </div>`;}).join('') : '<div class="empty">No web insights yet — they are researched on the next refresh.</div>';
     if(force) toast('Insights refreshed');
   } catch(e){ toast('Insights refresh failed: '+e.message); }
 }

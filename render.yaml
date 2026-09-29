@@ -4,17 +4,23 @@ services:
   - type: web
     name: sampark-dashboard
     runtime: node
+    plan: starter
+    disk:
+      name: sampark-data
+      mountPath: /var/sampark-data
+      sizeGB: 1
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /api/health
-    # NOTE: no persistent disk — free tier. The SQLite DB lives at ./data/
-    # and resets when the service restarts. Add a disk (Starter plan, $7/mo)
-    # and set DB_PATH to /var/sampark-data/sampark.db for persistence.
+    # Persistent disk ($7/mo Starter): the SQLite DB lives at
+    # /var/sampark-data/sampark.db and survives restarts and redeploys.
     envVars:
       - key: DB_PATH
-        value: ./data/sampark.db
+        value: /var/sampark-data/sampark.db
       - key: REP_NAME
         value: Arjun Deshpande
+      - key: CONSTITUENCY
+        value: Margao
       - key: LLM_PROVIDER
         value: anthropic
       - key: ANTHROPIC_MODEL
