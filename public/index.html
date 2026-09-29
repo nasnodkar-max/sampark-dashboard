@@ -14,6 +14,8 @@
   header .sub { opacity:.75; font-size:13px; }
   header .badge { margin-left:auto; font-size:12px; padding:5px 12px; border-radius:20px; background:#374151; }
   header .badge.ok { background:var(--green); } header .badge.warn { background:var(--amber); color:#1f2937; }
+  header button.badge { border:none; cursor:pointer; color:#fff; font:inherit; margin-left:0; }
+  header button.badge.on { background:var(--green); } header button.badge.off { background:#6b7280; }
   .wrap { max-width:1200px; margin:0 auto; padding:20px 24px 60px; }
   .banner { background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:12px 16px; margin-bottom:16px; font-size:14px; }
   .card { background:var(--card); border-radius:12px; padding:18px 20px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
@@ -70,6 +72,7 @@
 <header>
   <div><div class="logo">SAMPARK <span>·</span></div><div class="sub" id="repsub">Constituency Brain</div></div>
   <div class="badge warn" id="conn">checking…</div>
+  <button class="badge off" id="autoToggle" onclick="toggleAuto()" title="Automatic office replies for routine messages">🤖 auto-reply…</button>
   <a href="/logout" style="color:#fff;opacity:.65;font-size:12px;text-decoration:none">Logout</a>
 </header>
 <div class="wrap">
@@ -79,7 +82,9 @@
 
   <div class="kpis" id="kpis"></div>
 
-  <div class="card"><h2>✍️ Approvals — AI drafts, you decide <span class="tag">human approval required</span></h2><div id="approvals"></div></div>
+  <div class="card"><h2>✍️ Approvals — sensitive drafts, you decide <span class="tag">human approval required</span></h2><div id="approvals"></div></div>
+
+  <div class="card"><h2>🤖 Auto-sent by the office <span class="tag" style="background:#dcfce7;color:#166534">routine replies, no approval needed</span></h2><div id="autosent"></div></div>
 
   <div class="card"><h2>📥 Ticket Inbox</h2>
     <div class="chips" id="chips"></div>
@@ -117,7 +122,7 @@
 </div>
 <div class="toast" id="toast"></div>
 <script>
-let cur = null, filter = '';
+let cur = null, filter = '', autoOn = true;
 const $ = id => document.getElementById(id);
 const esc = s => String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function toast(m){ const t=$('toast'); t.textContent=m; t.style.display='block'; setTimeout(()=>t.style.display='none',2600); }
@@ -133,14 +138,19 @@ async function refresh(){
     b.className = 'badge ' + (h.configured ? 'ok' : 'warn');
     $('repsub').textContent = 'Constituency Brain · ' + h.rep;
     $('cfgBanner').style.display = h.configured ? 'none' : 'block';
+    autoOn = h.auto_reply !== false;
+    const at = $('autoToggle');
+    at.textContent = '🤖 auto-reply ' + (autoOn ? 'ON' : 'OFF');
+    at.className = 'badge ' + (autoOn ? 'on' : 'off');
   } catch(e){}
   try {
     const br = await api('/api/brief');
     let html = '';
     html += `<li>🆕 <b>${br.new_today}</b> new ticket${br.new_today==1?'':'s'} in the last 24 hours.</li>`;
     if (br.spike) html += `<li>📈 Emerging cluster: <b>${esc(br.spike.category)}</b> complaints — ${br.spike.this_week} this week vs ${br.spike.prev_week} last week.</li>`;
-    html += `<li>✍️ <b>${br.pending_drafts.length}</b> AI draft${br.pending_drafts.length==1?'':'s'} awaiting your approval.</li>`;
+    html += `<li>✍️ <b>${br.pending_drafts.length}</b> sensitive draft${br.pending_drafts.length==1?'':'s'} awaiting your approval.</li>`;
     html += `<li>⏳ <b>${br.awaiting_citizen}</b> ticket${br.awaiting_citizen==1?'':'s'} awaiting citizen reply.</li>`;
+    if (br.auto_sent_24h) html += `<li>🤖 <b>${br.auto_sent_24h}</b> routine ${br.auto_sent_24h==1?'reply was':'replies were'} auto-sent by the office in the last 24 hours.</li>`;
     if (br.ai_brief) {
       $('brief').innerHTML = br.ai_brief.split('\n').map((l) => l.replace(/^[-•*]\s*/, '').trim()).filter(Boolean)
         .map((l) => `<li>${esc(l)}</li>`).join('')
@@ -161,7 +171,28 @@ async function refresh(){
       return `<div class="mixbar"><div class="n">${esc(m.category)}</div><div class="bar" style="width:${Math.max(4, m.c/max*220)}px"></div><div class="c">${m.c}</div></div>`;
     }).join('') : '<div class="empty">No tickets in the last 7 days.</div>';
   } catch(e){}
-  await loadInbox(); await loadApprovals();
+  await loadInbox(); await loadApprovals(); await loadAutoSent();
+}
+
+async function toggleAuto(){
+  try {
+    const r = await api('/api/settings/auto-reply', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:!autoOn})});
+    autoOn = r.auto_reply;
+    toast('Auto-reply ' + (autoOn ? 'enabled — routine messages go out as the office' : 'paused — all replies need approval'));
+  } catch(e){ toast('Could not change setting: '+e.message); }
+  refresh();
+}
+
+async function loadAutoSent(){
+  let list = [];
+  try { list = await api('/api/auto-sent'); } catch(e){}
+  $('autosent').innerHTML = list.length ? list.map(m=>`
+    <div class="trow" onclick="openTicket('${m.ticket_id}')">
+      <div class="id">${esc(m.ticket_id)}</div>
+      <div class="who"><b>${esc(m.citizen_name||'Citizen')}</b><span>${esc(m.category)}</span></div>
+      <div class="msg">🤖 ${esc(m.body)}</div>
+      <span class="pill p-in_progress">${new Date(m.created_at).toLocaleString()}</span>
+    </div>`).join('') : '<div class="empty">No auto-sent replies yet. Routine messages (name requests, water/road/sanitation replies) go out automatically.</div>';
 }
 </script>
 </body>
@@ -172,7 +203,7 @@ async function loadInbox(){
   $('inbox').innerHTML = list.length ? list.map(t=>`
     <div class="trow" onclick="openTicket('${t.id}')">
       <div class="id">${esc(t.id)}</div>
-      <div class="who"><b>${esc(t.citizen_name||'Citizen')}</b><span>${esc(t.category)}${t.awaiting_name ? ' · <b style="color:var(--amber)">awaiting name</b>' : ''}</span></div>
+      <div class="who"><b>${esc(t.citizen_name||'Citizen')}</b><span>${esc(t.category)}${t.sensitive ? ' · <b style="color:var(--red)">sensitive</b>' : ''}${t.awaiting_name ? ' · <b style="color:var(--amber)">awaiting name</b>' : ''}</span></div>
       <div class="msg">${esc(t.last_message)}</div>
       <span class="pill pr-${t.priority}">${t.priority}</span>
       <span class="pill p-${t.status}">${statusLabel(t.status)}</span>
@@ -190,7 +221,7 @@ async function loadApprovals(){
       <div class="txt">${esc(t.pending_draft)}</div>
       <button class="btn primary" onclick="quickApprove('${t.id}')">Approve &amp; send</button>
       <button class="btn ghost" onclick="openTicket('${t.id}')">Review / edit</button>
-    </div>`).join('') : '<div class="empty">Nothing awaiting approval. New citizen messages generate a draft here automatically.</div>';
+    </div>`).join('') : '<div class="empty">Nothing awaiting approval. Sensitive topics land here; routine replies go out automatically as the office.</div>';
 }
 async function quickApprove(id){
   const t = await api('/api/tickets/'+id);
