@@ -746,6 +746,120 @@ function buildAssistantContext() {
   };
 }
 
+// Query tools the Sampark AI assistant can call to reach every citizen,
+// ticket, and chat message in the database. All inputs are sanitized and
+// every query is parameterized; result sizes are capped.
+const ASSISTANT_TOOL_DEFS = [
+  {
+    name: 'search_citizens',
+    description: 'Find citizens by name (partial match). Returns id, name, phone, address, onboarding step.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Full or partial citizen name, e.g. "Jai Shankar"' },
+        limit: { type: 'integer', description: 'Max results (default 10, max 50)' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'list_tickets',
+    description: 'List tickets filtered by category, kind, status, priority, or citizen name. Newest first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        category: { type: 'string', description: 'One of: streetlight, water, road, ration, drainage, sanitation, pension, education, other' },
+        kind: { type: 'string', description: 'issue or event' },
+        status: { type: 'string', description: 'new, open, awaiting_citizen, resolved, etc.' },
+        priority: { type: 'string', description: 'High, Medium, Low' },
+        citizen_name: { type: 'string', description: 'Partial citizen name match' },
+        limit: { type: 'integer', description: 'Max results (default 20, max 50)' },
+      },
+    },
+  },
+  {
+    name: 'get_ticket',
+    description: 'Full detail of one ticket: fields plus its complete WhatsApp message thread (oldest first).',
+    input_schema: {
+      type: 'object',
+      properties: { ticket_id: { type: 'string', description: 'Ticket ID, e.g. SKT-1001' } },
+      required: ['ticket_id'],
+    },
+  },
+  {
+    name: 'search_messages',
+    description: 'Full-text search across all citizen and office WhatsApp messages. Returns matching messages with ticket ID and citizen name.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        keyword: { type: 'string', description: 'Word or phrase to search for' },
+        limit: { type: 'integer', description: 'Max results (default 20, max 50)' },
+      },
+      required: ['keyword'],
+    },
+  },
+  {
+    name: 'get_stats',
+    description: 'Constituency-wide aggregates: citizen count, tickets by status/kind, top categories (30d), latest issue insights, upcoming events, open high-priority tickets.',
+    input_schema: { type: 'object', properties: {} },
+  },
+];
+
+function capLimit(v, def = 20, max = 50) {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? Math.min(Math.max(n, 1), max) : def;
+}
+const shortBody = (b, n = 400) => String(b || '').slice(0, n);
+
+async function runAssistantTool(name, input = {}) {
+  switch (name) {
+    case 'search_citizens': {
+      const rows = db.prepare(
+        'SELECT id, name, phone, address, onboarding_step FROM citizens WHERE name LIKE ? ORDER BY name LIMIT ?'
+      ).all(`%${String(input.name || '').slice(0, 60)}%`, capLimit(input.limit, 10));
+      return { count: rows.length, citizens: rows };
+    }
+    case 'list_tickets': {
+      const where = [];
+      const params = [];
+      const CATS = ['streetlight', 'water', 'road', 'ration', 'drainage', 'sanitation', 'pension', 'education', 'other'];
+      if (input.category && CATS.includes(input.category)) { where.push('category=?'); params.push(input.category); }
+      if (input.kind && ['issue', 'event'].includes(input.kind)) { where.push('kind=?'); params.push(input.kind); }
+      if (input.status && /^[a-z_]+$/.test(input.status)) { where.push('status=?'); params.push(input.status); }
+      if (input.priority && ['High', 'Medium', 'Low'].includes(input.priority)) { where.push('priority=?'); params.push(input.priority); }
+      if (input.citizen_name) { where.push('citizen_name LIKE ?'); params.push(`%${String(input.citizen_name).slice(0, 60)}%`); }
+      const q = `SELECT id, citizen_name, category, kind, priority, status, issue_address, venue, event_datetime, created_at FROM tickets` +
+        (where.length ? ` WHERE ${where.join(' AND ')}` : '') + ` ORDER BY created_at DESC LIMIT ?`;
+      params.push(capLimit(input.limit));
+      const rows = db.prepare(q).all(...params);
+      return { count: rows.length, tickets: rows };
+    }
+    case 'get_ticket': {
+      const t = db.prepare(
+        'SELECT id, citizen_name, category, kind, priority, status, issue_address, venue, event_datetime, pending_draft, created_at, updated_at FROM tickets WHERE id=?'
+      ).get(String(input.ticket_id || '').slice(0, 20));
+      if (!t) return { error: 'ticket not found' };
+      t.messages = db.prepare(
+        "SELECT direction, substr(body,1,400) AS body, created_at FROM messages WHERE ticket_id=? ORDER BY created_at ASC LIMIT 60"
+      ).all(t.id);
+      return t;
+    }
+    case 'search_messages': {
+      const kw = `%${String(input.keyword || '').slice(0, 60)}%`;
+      const rows = db.prepare(
+        `SELECT m.ticket_id, t.citizen_name, m.direction, substr(m.body,1,300) AS snippet, m.created_at
+         FROM messages m LEFT JOIN tickets t ON t.id=m.ticket_id
+         WHERE m.body LIKE ? ORDER BY m.created_at DESC LIMIT ?`
+      ).all(kw, capLimit(input.limit));
+      return { count: rows.length, messages: rows };
+    }
+    case 'get_stats':
+      return buildAssistantContext();
+    default:
+      throw new Error(`unknown tool: ${name}`);
+  }
+}
+
 // Politician chats with the Sampark AI assistant about constituency insights.
 app.post('/api/ask', express.json(), async (req, res) => {
   const question = String(req.body.question || '').trim().slice(0, 1000);
@@ -753,8 +867,14 @@ app.post('/api/ask', express.json(), async (req, res) => {
   const history = db.prepare('SELECT role, content FROM ai_chats ORDER BY id DESC LIMIT 8').all().reverse();
   db.prepare('INSERT INTO ai_chats (role, content, created_at) VALUES (?,?,?)').run('user', question, Date.now());
   let answer = null;
-  try { answer = await ai.askAI({ repName: REP_NAME, question, context: buildAssistantContext(), history }); }
-  catch (e) { console.error('askAI failed:', e.message); }
+  // Tool-enabled assistant first: it can query every citizen, ticket, and message.
+  try { answer = await ai.askAIWithTools({ repName: REP_NAME, question, context: buildAssistantContext(), history, toolDefs: ASSISTANT_TOOL_DEFS, runTool: runAssistantTool }); }
+  catch (e) { console.error('askAIWithTools failed:', e.message); }
+  // Fallback: summary-only context (e.g. OpenAI provider or tool loop failure).
+  if (!answer) {
+    try { answer = await ai.askAI({ repName: REP_NAME, question, context: buildAssistantContext(), history }); }
+    catch (e) { console.error('askAI failed:', e.message); }
+  }
   if (!answer) answer = 'Sampark AI is unavailable right now (no AI key configured on the server). Your question has been saved — please try again once the AI key is set.';
   db.prepare('INSERT INTO ai_chats (role, content, created_at) VALUES (?,?,?)').run('assistant', answer, Date.now());
   res.json({ ok: true, answer });
