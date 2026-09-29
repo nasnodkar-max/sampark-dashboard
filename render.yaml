@@ -7,13 +7,9 @@ services:
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /api/health
-    disk:
-      name: sampark-data
-      mountPath: /var/sampark-data
-      sizeGB: 1
     envVars:
       - key: DB_PATH
-        value: /var/sampark-data/sampark.db
+        value: ./data/sampark.db
       - key: REP_NAME
         value: Arjun Deshpande
       - key: LLM_PROVIDER
@@ -24,12 +20,7 @@ services:
       - key: WEBHOOK_VERIFY_TOKEN
         sync: false
       - key: WHATSAPP_TOKEN
-        sync: false
       - key: WHATSAPP_PHONE_NUMBER_ID
-        sync: false
       - key: WHATSAPP_APP_SECRET
-        sync: false
       - key: ANTHROPIC_API_KEY
-        sync: false
       - key: OPENAI_API_KEY
-        sync: false
