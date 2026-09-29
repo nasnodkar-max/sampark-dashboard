@@ -5,128 +5,182 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sampark — Constituency AI Assistant</title>
 <style>
-  :root { --indigo:#232a5c; --amber:#f59e0b; --bg:#f4f5fa; --card:#fff; --green:#16a34a; --red:#dc2626; --muted:#6b7280; }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:#1f2937; }
-  header { background:var(--indigo); color:#fff; padding:14px 24px; display:flex; align-items:center; gap:16px; position:sticky; top:0; z-index:10; }
-  header .logo { font-weight:800; font-size:20px; letter-spacing:.5px; }
-  header .logo span { color:var(--amber); }
-  header .sub { opacity:.75; font-size:13px; }
-  header .badge { margin-left:auto; font-size:12px; padding:5px 12px; border-radius:20px; background:#374151; }
-  header .badge.ok { background:var(--green); } header .badge.warn { background:var(--amber); color:#1f2937; }
-  header button.badge { border:none; cursor:pointer; color:#fff; font:inherit; margin-left:0; }
-  header button.badge.on { background:var(--green); } header button.badge.off { background:#6b7280; }
-  nav.tabs { background:#fff; border-bottom:1px solid #e5e7eb; padding:0 24px; display:flex; gap:4px; overflow-x:auto; position:sticky; top:60px; z-index:9; }
-  nav.tabs button { border:none; background:none; padding:14px 16px; font-size:14px; font-weight:600; color:var(--muted); cursor:pointer; border-bottom:3px solid transparent; white-space:nowrap; }
-  nav.tabs button.active { color:var(--indigo); border-bottom-color:var(--amber); }
-  nav.tabs button .cnt { background:#eef2ff; color:var(--indigo); border-radius:10px; padding:1px 8px; font-size:11px; margin-left:6px; }
-  .wrap { max-width:1200px; margin:0 auto; padding:20px 24px 60px; }
-  .banner { background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:12px 16px; margin-bottom:16px; font-size:14px; }
-  .card { background:var(--card); border-radius:12px; padding:18px 20px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
-  .card h2 { font-size:16px; margin-bottom:12px; color:var(--indigo); }
-  .tag { font-size:11px; background:#eef2ff; color:var(--indigo); padding:3px 8px; border-radius:12px; margin-left:8px; font-weight:600; vertical-align:middle; }
-  .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px; }
-  .kpi { background:#fff; border-radius:12px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
-  .kpi .v { font-size:26px; font-weight:800; color:var(--indigo); }
-  .kpi .l { font-size:12px; color:var(--muted); margin-top:4px; }
-  .brief li { margin:6px 0 6px 18px; font-size:14px; }
-  .chips { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
-  .chip { border:1px solid #d1d5db; background:#fff; border-radius:18px; padding:6px 14px; font-size:13px; cursor:pointer; }
-  .chip.active { background:var(--indigo); color:#fff; border-color:var(--indigo); }
-  .trow { display:flex; gap:12px; align-items:center; padding:12px 8px; border-top:1px solid #f0f0f0; cursor:pointer; border-radius:8px;}
-  .trow:hover { background:#f8fafc; }
-  .trow .id { font-weight:700; font-size:13px; color:var(--indigo); min-width:74px;}
-  .trow .who { min-width:150px; } .trow .who b { display:block; font-size:14px;} .trow .who span{font-size:12px;color:var(--muted);}
-  .trow .msg { flex:1; font-size:13px; color:#374151; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
-  .trow .addr { font-size:12px; color:var(--muted); min-width:170px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
-  .pill { font-size:11px; padding:3px 10px; border-radius:12px; font-weight:700; white-space:nowrap;}
-  .p-new{background:#fef3c7;color:#92400e;} .p-in_progress{background:#dbeafe;color:#1e40af;}
-  .p-awaiting_citizen{background:#e0e7ff;color:#3730a3;} .p-resolved{background:#dcfce7;color:#166534;}
-  .pr-High{background:#fee2e2;color:#991b1b;} .pr-Medium{background:#f3f4f6;color:#4b5563;}
-  .k-issue{background:#eef2ff;color:#3730a3;} .k-event{background:#fdf2f8;color:#9d174d;}
-  .tr-rising{background:#fee2e2;color:#991b1b;} .tr-falling{background:#dcfce7;color:#166534;} .tr-stable{background:#f3f4f6;color:#4b5563;}
-  .draft { border:1px solid #e5e7f0; border-left:4px solid var(--amber); border-radius:10px; padding:14px 16px; margin-bottom:12px; background:#fffdf7;}
-  .draft .meta { font-size:12px; color:var(--muted); margin-bottom:8px;}
-  .draft .txt { font-size:14px; background:#fff; border:1px solid #eee; border-radius:8px; padding:10px 12px; margin-bottom:10px;}
-  .btn { border:none; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:700; cursor:pointer; }
-  .btn.primary { background:var(--green); color:#fff; } .btn.ghost { background:#eef2ff; color:var(--indigo); }
-  .btn.warn { background:#fef3c7; color:#92400e; } .btn + .btn { margin-left:8px; }
-  .insight { border:1px solid #e5e7f0; border-radius:10px; padding:14px 16px; margin-bottom:10px; display:flex; gap:14px; align-items:flex-start;}
-  .insight .rank { font-size:22px; font-weight:800; color:var(--indigo); min-width:36px; }
-  .insight .body { flex:1; } .insight .body b { font-size:15px; }
-  .insight .sum { font-size:13px; color:#374151; margin:4px 0; }
-  .insight .act { font-size:13px; background:#f0fdf4; border-left:3px solid var(--green); padding:8px 10px; border-radius:0 8px 8px 0; margin-top:6px;}
-  .insight .srcs { font-size:12px; color:var(--muted); margin-top:6px; }
-  .insight .srcs a { color:var(--indigo); }
-  .ev { border:1px solid #e5e7f0; border-radius:10px; padding:14px 16px; margin-bottom:10px; display:flex; gap:12px; align-items:center;}
-  .ev .when { min-width:120px; } .ev .when b { display:block; font-size:14px; color:#9d174d;} .ev .when span{font-size:12px;color:var(--muted);}
-  .ev .what { flex:1; font-size:14px; } .ev .what span{display:block;font-size:12px;color:var(--muted);margin-top:2px;}
-  .askbox { display:flex; flex-direction:column; gap:8px; }
-  .amsg { max-width:85%; padding:10px 14px; border-radius:12px; font-size:14px; line-height:1.5; white-space:pre-wrap;}
-  .amsg.user { background:#eef2ff; align-self:flex-end; border-bottom-right-radius:2px;}
-  .amsg.ai { background:#fff; border:1px solid #e5e7eb; align-self:flex-start; border-bottom-left-radius:2px;}
-  .askrow { display:flex; gap:8px; margin-top:8px;}
-  .askrow input { flex:1; border:1px solid #d1d5db; border-radius:8px; padding:10px 14px; font-size:14px;}
-  .search { width:100%; border:1px solid #d1d5db; border-radius:8px; padding:10px 14px; font-size:14px; margin-bottom:12px;}
-  .drawer { position:fixed; top:0; right:0; width:min(460px,100%); height:100%; background:#fff; box-shadow:-4px 0 20px rgba(0,0,0,.15); z-index:50; display:none; flex-direction:column;}
-  .drawer.open { display:flex; }
-  .dhead { padding:16px 20px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center;}
-  .dhead b { font-size:16px; color:var(--indigo);} .dhead button{background:none;border:none;font-size:20px;cursor:pointer;}
-  .thread { flex:1; overflow-y:auto; padding:16px 20px; background:#f8fafc; display:flex; flex-direction:column; gap:8px;}
-  .bub { max-width:85%; padding:9px 13px; border-radius:12px; font-size:14px; line-height:1.45;}
-  .bub.in { background:#fff; align-self:flex-start; border:1px solid #e5e7eb; border-bottom-left-radius:2px;}
-  .bub.out { background:#dcf8c6; align-self:flex-end; border-bottom-right-radius:2px;}
-  .bub .t { display:block; font-size:10px; color:var(--muted); margin-top:4px; text-align:right;}
-  .dfoot { padding:14px 20px; border-top:1px solid #eee; }
-  .dfoot textarea { width:100%; border:1px solid #d1d5db; border-radius:8px; padding:10px; font-size:14px; min-height:70px; font-family:inherit;}
-  .dfoot .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;}
-  .mixbar { display:flex; align-items:center; gap:10px; margin:8px 0; font-size:13px;}
-  .mixbar .n { width:130px; text-transform:capitalize;}
-  .mixbar .bar { height:10px; background:var(--indigo); border-radius:5px; min-width:4px;}
-  .mixbar .c { color:var(--muted); }
-  details.sim { margin-top:8px; } details.sim summary { cursor:pointer; font-size:13px; color:var(--indigo); font-weight:700;}
-  .simbox { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;}
-  .simbox input { flex:1; min-width:180px; border:1px solid #d1d5db; border-radius:8px; padding:9px 12px; font-size:14px;}
-  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#111827; color:#fff; padding:12px 22px; border-radius:10px; font-size:14px; z-index:100; display:none;}
-  .empty { color:var(--muted); font-size:14px; padding:18px 4px; }
-  .tabpage { display:none; } .tabpage.active { display:block; }
-  @media (max-width:760px){ .kpis{grid-template-columns:repeat(2,1fr);} .trow .msg{display:none;} .trow .addr{display:none;} }
+  :root{
+    --bg:#F6F4EE; --card:#FFFFFF; --ink:#2B2822; --muted:#7A746A; --faint:#AAA49A;
+    --line:#E8E2D2; --line-soft:#F1ECE0;
+    --terra:#C05B2B; --terra-dark:#9C4A22; --terra-soft:#FBEEE2;
+    --green:#20744A; --green-soft:#E6F3EB;
+    --red:#B3372B; --red-soft:#FBEAE7;
+    --amber:#8F6414; --amber-soft:#FAF0D5;
+    --blue:#2E5CA6; --blue-soft:#E9F0FA;
+    --pink:#9D2B5E; --pink-soft:#FAEAF1;
+    --radius:16px;
+    --shadow:0 1px 2px rgba(90,75,50,.06), 0 6px 18px rgba(90,75,50,.05);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+  header{background:#FCFBF6;border-bottom:1px solid var(--line);padding:10px 24px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:10}
+  .brand{display:flex;align-items:center;gap:11px}
+  .brand .mark{width:34px;height:34px;border-radius:11px;background:var(--terra);color:#fff;display:flex;align-items:center;justify-content:center;flex:none}
+  .brand .mark svg{width:20px;height:20px}
+  .brand .word{font-weight:800;font-size:19px;letter-spacing:.2px;line-height:1.2}
+  .brand .sub{font-size:12.5px;color:var(--muted);line-height:1.3}
+  header .badge{margin-left:auto;font-size:12px;font-weight:600;padding:6px 14px;border-radius:999px;background:var(--line-soft);color:var(--muted);white-space:nowrap}
+  header .badge.ok{background:var(--green-soft);color:var(--green)}
+  header .badge.warn{background:var(--amber-soft);color:var(--amber)}
+  header button.badge{border:none;cursor:pointer;font:inherit;margin-left:0}
+  header button.badge.on{background:var(--green-soft);color:var(--green)}
+  header button.badge.off{background:var(--line-soft);color:var(--muted)}
+  header .logout{color:var(--muted);font-size:12.5px;text-decoration:none;margin-left:4px}
+  header .logout:hover{color:var(--ink)}
+  nav.tabs{background:var(--bg);border-bottom:1px solid var(--line);padding:10px 24px;display:flex;gap:6px;overflow-x:auto;position:sticky;top:62px;z-index:9}
+  nav.tabs button{border:none;background:none;padding:8px 15px;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;border-radius:999px;white-space:nowrap;display:flex;align-items:center;gap:7px;font-family:inherit}
+  nav.tabs button:hover{background:#EAE4D2;color:var(--ink)}
+  nav.tabs button.active{background:var(--ink);color:#fff}
+  nav.tabs button .cnt{background:rgba(0,0,0,.07);border-radius:999px;padding:1px 8px;font-size:11px}
+  nav.tabs button.active .cnt{background:rgba(255,255,255,.22)}
+  nav.tabs button .tabmark{width:15px;height:15px;color:var(--terra);display:inline-flex}
+  nav.tabs button .tabmark svg{width:15px;height:15px}
+  nav.tabs button.active .tabmark{color:#EFA87E}
+  .wrap{max-width:1200px;margin:0 auto;padding:22px 24px 60px}
+  .banner{background:var(--amber-soft);border:1px solid #EBD9A8;border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .card h2{font-size:16px;margin-bottom:12px;color:var(--ink);letter-spacing:-.1px}
+  .card h3{font-size:14px;color:var(--ink)}
+  .tag{font-size:11px;background:var(--terra-soft);color:var(--terra-dark);padding:3px 10px;border-radius:999px;margin-left:8px;font-weight:700;vertical-align:middle;white-space:nowrap}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+  .kpi{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow)}
+  .kpi .v{font-size:27px;font-weight:800;color:var(--ink);letter-spacing:-.5px}
+  .kpi .l{font-size:12px;color:var(--muted);margin-top:4px}
+  .brief li{margin:7px 0 7px 18px;font-size:14px;line-height:1.55}
+  .chips{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+  .chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:7px 15px;font-size:13px;cursor:pointer;color:var(--muted);font-weight:600;font-family:inherit}
+  .chip:hover{border-color:var(--faint)}
+  .chip.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .trow{display:flex;gap:12px;align-items:center;padding:12px 10px;border-top:1px solid var(--line-soft);cursor:pointer;border-radius:10px}
+  .trow:hover{background:#FAF7EF}
+  .trow .id{font-weight:700;font-size:13px;color:var(--ink);min-width:74px}
+  .trow .who{min-width:150px}.trow .who b{display:block;font-size:14px}.trow .who span{font-size:12px;color:var(--muted)}
+  .trow .msg{flex:1;font-size:13px;color:#4A463C;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .trow .addr{font-size:12px;color:var(--muted);min-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pill{font-size:11px;padding:3px 10px;border-radius:999px;font-weight:700;white-space:nowrap}
+  .p-new{background:var(--amber-soft);color:var(--amber)}
+  .p-in_progress{background:var(--blue-soft);color:var(--blue)}
+  .p-awaiting_citizen{background:#EDE9FB;color:#5B4BC4}
+  .p-resolved{background:var(--green-soft);color:var(--green)}
+  .pr-High{background:var(--red-soft);color:var(--red)}
+  .pr-Medium{background:var(--line-soft);color:var(--muted)}
+  .k-issue{background:var(--blue-soft);color:var(--blue)}
+  .k-event{background:var(--pink-soft);color:var(--pink)}
+  .tr-rising{background:var(--red-soft);color:var(--red)}
+  .tr-falling{background:var(--green-soft);color:var(--green)}
+  .tr-stable{background:var(--line-soft);color:var(--muted)}
+  .draft{border:1px solid var(--line);border-left:4px solid var(--terra);border-radius:12px;padding:14px 16px;margin-bottom:12px;background:#FFFDF8}
+  .draft .meta{font-size:12px;color:var(--muted);margin-bottom:8px}
+  .draft .txt{font-size:14px;line-height:1.55;background:#fff;border:1px solid var(--line-soft);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+  .btn{border:none;border-radius:10px;padding:9px 17px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+  .btn.primary{background:var(--terra);color:#fff}
+  .btn.primary:hover{background:var(--terra-dark)}
+  .btn.ghost{background:var(--terra-soft);color:var(--terra-dark)}
+  .btn.ghost:hover{background:#F6E3D0}
+  .btn.warn{background:var(--amber-soft);color:var(--amber)}
+  .btn + .btn{margin-left:8px}
+  .insight{border:1px solid var(--line);border-radius:12px;padding:15px 17px;margin-bottom:10px;display:flex;gap:14px;align-items:flex-start;background:#FFFDF9}
+  .insight .rank{font-size:21px;font-weight:800;color:var(--ink);min-width:36px;display:flex;align-items:flex-start;justify-content:center;padding-top:1px}
+  .insight .rank svg{width:21px;height:21px;color:var(--terra)}
+  .insight .body{flex:1}.insight .body b{font-size:15px}
+  .insight .sum{font-size:13px;color:#4A463C;margin:5px 0;line-height:1.55}
+  .insight .act{font-size:13px;line-height:1.5;background:var(--terra-soft);border-left:3px solid var(--terra);padding:9px 12px;border-radius:0 10px 10px 0;margin-top:8px;color:#5C3A22}
+  .insight .srcs{font-size:12px;color:var(--muted);margin-top:8px}
+  .insight .srcs a{color:var(--terra-dark);text-decoration:none}
+  .insight .srcs a:hover{text-decoration:underline}
+  .ev{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:10px;display:flex;gap:12px;align-items:center;background:#FFFDF9}
+  .ev .when{min-width:120px}.ev .when b{display:block;font-size:14px;color:var(--pink)}.ev .when span{font-size:12px;color:var(--muted)}
+  .ev .what{flex:1;font-size:14px}.ev .what span{display:block;font-size:12px;color:var(--muted);margin-top:2px}
+  .askhead{display:flex;align-items:center;gap:13px;margin-bottom:16px}
+  .askhead .mark{width:40px;height:40px;border-radius:13px;background:var(--terra);color:#fff;display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 3px 10px rgba(192,91,43,.35)}
+  .askhead .mark svg{width:23px;height:23px}
+  .askhead h2{margin:0;font-size:17px}
+  .askhead .asksub{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .askhead .genai{margin-left:auto;flex:none}
+  .askbox{display:flex;flex-direction:column;gap:4px}
+  .amsg{max-width:88%;padding:10px 15px;border-radius:16px;font-size:14px;line-height:1.6;white-space:pre-wrap}
+  .amsg.user{background:#E9E2CF;align-self:flex-end;border-bottom-right-radius:5px;color:var(--ink)}
+  .amsg.ai{background:transparent;align-self:flex-start;display:flex;gap:10px;padding:9px 2px;max-width:96%;white-space:normal}
+  .aiava{width:30px;height:30px;flex:none;border-radius:50%;background:var(--terra-soft);border:1px solid #EFD9C2;color:var(--terra);display:flex;align-items:center;justify-content:center;margin-top:1px}
+  .aiava svg{width:16px;height:16px}
+  .aitxt{padding-top:4px;white-space:pre-wrap;flex:1}
+  .thinking{animation:pulse 1.3s ease-in-out infinite;color:var(--muted)}
+  @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+  .askrow{display:flex;gap:10px;margin-top:12px;align-items:center}
+  .askrow input{flex:1;border:1px solid var(--line);background:#fff;border-radius:999px;padding:12px 18px;font-size:14px;font-family:inherit;color:var(--ink)}
+  .askrow input:focus{outline:none;border-color:var(--terra);box-shadow:0 0 0 3px var(--terra-soft)}
+  .sendbtn{width:42px;height:42px;flex:none;border:none;border-radius:50%;background:var(--terra);color:#fff;font-size:19px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 10px rgba(192,91,43,.35)}
+  .sendbtn:hover{background:var(--terra-dark)}
+  .search{width:100%;border:1px solid var(--line);background:#fff;border-radius:999px;padding:11px 18px;font-size:14px;margin-bottom:12px;font-family:inherit;color:var(--ink)}
+  .search:focus{outline:none;border-color:var(--terra);box-shadow:0 0 0 3px var(--terra-soft)}
+  .drawer{position:fixed;top:0;right:0;width:min(460px,100%);height:100%;background:#FCFBF6;border-left:1px solid var(--line);box-shadow:-8px 0 30px rgba(90,75,50,.12);z-index:50;display:none;flex-direction:column}
+  .drawer.open{display:flex}
+  .dhead{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+  .dhead b{font-size:15px;color:var(--ink)}.dhead button{background:none;border:none;font-size:22px;cursor:pointer;color:var(--muted)}
+  .thread{flex:1;overflow-y:auto;padding:16px 20px;background:var(--bg);display:flex;flex-direction:column;gap:8px}
+  .bub{max-width:85%;padding:9px 13px;border-radius:14px;font-size:14px;line-height:1.5}
+  .bub.in{background:#fff;align-self:flex-start;border:1px solid var(--line);border-bottom-left-radius:4px}
+  .bub.out{background:#EDE4CB;align-self:flex-end;border-bottom-right-radius:4px}
+  .bub .t{display:block;font-size:10px;color:var(--muted);margin-top:4px;text-align:right}
+  .dfoot{padding:14px 20px;border-top:1px solid var(--line);background:#FCFBF6}
+  .dfoot textarea{width:100%;border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-size:14px;min-height:70px;font-family:inherit;background:#fff;color:var(--ink)}
+  .dfoot textarea:focus{outline:none;border-color:var(--terra);box-shadow:0 0 0 3px var(--terra-soft)}
+  .dfoot .row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  .dfoot input{font-family:inherit;color:var(--ink)}
+  .mixbar{display:flex;align-items:center;gap:10px;margin:9px 0;font-size:13px}
+  .mixbar .n{width:130px;text-transform:capitalize;color:#4A463C}
+  .mixbar .bar{height:10px;background:var(--terra);border-radius:5px;min-width:4px}
+  .mixbar .c{color:var(--muted)}
+  details.sim{margin-top:8px}details.sim summary{cursor:pointer;font-size:13px;color:var(--terra-dark);font-weight:700}
+  .simbox{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  .simbox input{flex:1;min-width:180px;border:1px solid var(--line);border-radius:10px;padding:10px 13px;font-size:14px;font-family:inherit;background:#fff;color:var(--ink)}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#2B2822;color:#fff;padding:12px 22px;border-radius:12px;font-size:14px;z-index:100;display:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+  .empty{color:var(--muted);font-size:14px;padding:18px 4px;line-height:1.55}
+  .tabpage{display:none}.tabpage.active{display:block;animation:fadein .18s ease}
+  @keyframes fadein{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+  @media (max-width:760px){.kpis{grid-template-columns:repeat(2,1fr)}.trow .msg{display:none}.trow .addr{display:none}header{padding:10px 14px}nav.tabs{padding:10px 14px}.wrap{padding:16px 14px 50px}}
 </style>
 </head>
 <body>
 <header>
-  <div><div class="logo">SAMPARK <span>·</span></div><div class="sub" id="repsub">Constituency AI Assistant</div></div>
+  <div class="brand"><span class="mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span><div><div class="word">Sampark</div><div class="sub" id="repsub">Constituency AI Assistant</div></div></div>
   <div class="badge warn" id="conn">checking…</div>
-  <button class="badge off" id="autoToggle" onclick="toggleAuto()" title="Automatic office replies for routine messages">🤖 auto-reply…</button>
-  <a href="/logout" style="color:#fff;opacity:.65;font-size:12px;text-decoration:none">Logout</a>
+  <button class="badge off" id="autoToggle" onclick="toggleAuto()" title="Automatic office replies for routine messages">auto-reply…</button>
+  <a href="/logout" class="logout">Logout</a>
 </header>
 <nav class="tabs" id="tabs">
-  <button data-tab="overview" class="active" onclick="showTab('overview')">📊 Overview</button>
-  <button data-tab="tickets" onclick="showTab('tickets')">📥 Tickets<span class="cnt" id="cntTickets"></span></button>
-  <button data-tab="issues" onclick="showTab('issues')">🛠️ Issues</button>
-  <button data-tab="events" onclick="showTab('events')">🎉 Events<span class="cnt" id="cntEvents"></span></button>
-  <button data-tab="citizens" onclick="showTab('citizens')">👥 Citizens<span class="cnt" id="cntCitizens"></span></button>
-  <button data-tab="insights" onclick="showTab('insights')">💡 Insights</button>
-  <button data-tab="ask" onclick="showTab('ask')">🤖 Ask Sampark</button>
-  <button data-tab="approvals" onclick="showTab('approvals')">✍️ Approvals<span class="cnt" id="cntApprovals"></span></button>
+  <button data-tab="overview" class="active" onclick="showTab('overview')">Overview</button>
+  <button data-tab="tickets" onclick="showTab('tickets')">Tickets<span class="cnt" id="cntTickets"></span></button>
+  <button data-tab="issues" onclick="showTab('issues')">Issues</button>
+  <button data-tab="events" onclick="showTab('events')">Events<span class="cnt" id="cntEvents"></span></button>
+  <button data-tab="citizens" onclick="showTab('citizens')">Citizens<span class="cnt" id="cntCitizens"></span></button>
+  <button data-tab="insights" onclick="showTab('insights')">Insights</button>
+  <button data-tab="ask" onclick="showTab('ask')"><span class="tabmark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span>Ask Sampark</button>
+  <button data-tab="approvals" onclick="showTab('approvals')">Approvals<span class="cnt" id="cntApprovals"></span></button>
 </nav>
 <div class="wrap">
   <div class="banner" id="cfgBanner" style="display:none">⚠️ WhatsApp API not connected — the dashboard works, but sending is disabled. Set <b>WHATSAPP_TOKEN</b> and <b>WHATSAPP_PHONE_NUMBER_ID</b> in the host env vars, then restart.</div>
 
   <div class="tabpage active" id="page-overview">
-    <div class="card"><h2>📋 2-Minute Daily Brief</h2><ul class="brief" id="brief"><li>Loading…</li></ul></div>
+    <div class="card"><h2>2-Minute Daily Brief</h2><ul class="brief" id="brief"><li>Loading…</li></ul></div>
     <div class="kpis" id="kpis"></div>
-    <div class="card"><h2>📊 Issue mix — last 7 days</h2><div id="mix"></div></div>
-    <div class="card"><h2>🤖 Auto-sent by the office <span class="tag" style="background:#dcfce7;color:#166534">routine replies, no approval needed</span></h2><div id="autosent"></div></div>
+    <div class="card"><h2>Issue mix — last 7 days</h2><div id="mix"></div></div>
+    <div class="card"><h2>Auto-sent by the office <span class="tag" style="background:#dcfce7;color:#166534">routine replies, no approval needed</span></h2><div id="autosent"></div></div>
   </div>
 
   <div class="tabpage" id="page-tickets">
-    <div class="card"><h2>📥 Ticket Inbox</h2>
+    <div class="card"><h2>Ticket Inbox</h2>
       <div class="chips" id="kindChips"></div>
       <div class="chips" id="chips"></div>
       <div id="inbox"></div>
     </div>
-    <div class="card"><details class="sim"><summary>🧪 Local test simulator (no WhatsApp needed)</summary>
+    <div class="card"><details class="sim"><summary>Local test simulator (no WhatsApp needed)</summary>
       <div class="simbox">
         <input id="simFrom" placeholder="Sender phone, e.g. 919876543210">
         <input id="simName" placeholder="Name, e.g. Priya Nair">
@@ -138,49 +192,49 @@
   </div>
 
   <div class="tabpage" id="page-issues">
-    <div class="card"><h2>🛠️ Issues <span class="tag">civic complaints needing action</span></h2>
+    <div class="card"><h2>Issues <span class="tag">civic complaints needing action</span></h2>
       <div class="chips" id="issueChips"></div><div id="issueInbox"></div>
     </div>
   </div>
 
   <div class="tabpage" id="page-events">
-    <div class="card"><h2>🎉 Events &amp; Invitations <span class="tag" style="background:#fdf2f8;color:#9d174d">life moments citizens shared</span></h2>
+    <div class="card"><h2>Events &amp; Invitations <span class="tag" style="background:#fdf2f8;color:#9d174d">life moments citizens shared</span></h2>
       <div id="eventList"></div>
     </div>
   </div>
 
   <div class="tabpage" id="page-citizens">
-    <div class="card"><h2>👥 Citizen Registry <span class="tag">everyone who ever messaged</span>
-      <span style="float:right"><button class="btn ghost" onclick="seedDemo()">⬇ Load 1,000 demo chats</button></span></h2>
+    <div class="card"><h2>Citizen Registry <span class="tag">everyone who ever messaged</span>
+      <span style="float:right"><button class="btn ghost" onclick="seedDemo()">↓ Load 1,000 demo chats</button></span></h2>
       <input class="search" id="citSearch" placeholder="Search by name, phone or address…" oninput="loadCitizens()">
       <div id="citList"></div>
     </div>
   </div>
 
   <div class="tabpage" id="page-insights">
-    <div class="card"><h2>💡 Constituency Insights <span class="tag">refreshed daily by AI</span>
+    <div class="card"><h2>Constituency Insights <span class="tag">refreshed daily by AI</span>
       <span style="float:right"><button class="btn ghost" onclick="refreshInsights(true)">↻ Refresh now</button></span></h2>
       <div id="insMeta" style="font-size:12px;color:var(--muted);margin-bottom:12px"></div>
-      <h3 style="margin:4px 0 10px">📋 From constituency issues <span class="tag">top 10 · last 30 days of tickets</span></h3>
+      <h3 style="margin:4px 0 10px">From constituency issues <span class="tag">top 10 · last 30 days of tickets</span></h3>
       <div id="insList"></div>
-      <h3 style="margin:20px 0 10px">🌐 From the web <span class="tag">recent Margao &amp; Goa news, researched by AI</span></h3>
+      <h3 style="margin:20px 0 10px">From the web <span class="tag">recent Margao &amp; Goa news, researched by AI</span></h3>
       <div id="webInsList"></div>
     </div>
   </div>
 
   <div class="tabpage" id="page-ask">
-    <div class="card"><h2>🤖 Ask Sampark <span class="tag">your AI constituency assistant</span></h2>
+    <div class="card"><div class="askhead"><span class="mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span><div><h2>Ask Sampark</h2><div class="asksub">GenAI constituency assistant · answers from live data</div></div><span class="tag genai">✦ GenAI</span></div>
       <div class="askbox" id="askThread" style="max-height:420px;overflow-y:auto;margin-bottom:8px"></div>
       <div class="askrow">
         <input id="askInput" placeholder="Ask about issues, citizens, events… e.g. “What are the top water complaints in Fatorda?”" onkeydown="if(event.key==='Enter')askSend()">
-        <button class="btn primary" onclick="askSend()">Ask</button>
+        <button class="sendbtn" onclick="askSend()" title="Send">↑</button>
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:8px">Sampark AI answers from live constituency data — ticket counts, areas, citizens and today's insights. It never invents numbers.</div>
     </div>
   </div>
 
   <div class="tabpage" id="page-approvals">
-    <div class="card"><h2>✍️ Approvals — sensitive drafts, you decide <span class="tag">human approval required</span></h2><div id="approvals"></div></div>
+    <div class="card"><h2>Approvals — sensitive drafts, you decide <span class="tag">human approval required</span></h2><div id="approvals"></div></div>
   </div>
 </div>
 
@@ -204,10 +258,11 @@
 <script>
 let cur = null, filter = '', kindFilter = '', issueFilter = '', autoOn = true, activeTab = 'overview', askLoaded = false;
 const $ = id => document.getElementById(id);
+const SPARK='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg>';
 const esc = s => String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function toast(m){ const t=$('toast'); t.textContent=m; t.style.display='block'; setTimeout(()=>t.style.display='none',2600); }
 const statusLabel = s => ({new:'New',in_progress:'In progress',awaiting_citizen:'Awaiting citizen',resolved:'Resolved'}[s]||s);
-const kindPill = k => k==='event' ? '<span class="pill k-event">🎉 event</span>' : '<span class="pill k-issue">🛠️ issue</span>';
+const kindPill = k => k==='event' ? '<span class="pill k-event">event</span>' : '<span class="pill k-issue">issue</span>';
 
 async function api(p, opt){ const r = await fetch(p, opt); if(r.status===401){ location.href='/login'; throw new Error('login required'); } const j = await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.error||('HTTP '+r.status)); return j; }
 
@@ -238,7 +293,7 @@ async function refreshHeader(){
     $('cfgBanner').style.display = h.configured ? 'none' : 'block';
     autoOn = h.auto_reply !== false;
     const at = $('autoToggle');
-    at.textContent = '🤖 auto-reply ' + (autoOn ? 'ON' : 'OFF');
+    at.textContent = 'auto-reply ' + (autoOn ? 'ON' : 'OFF');
     at.className = 'badge ' + (autoOn ? 'on' : 'off');
   } catch(e){}
   try {
@@ -268,11 +323,11 @@ async function loadOverview(){
         + '<li style="list-style:none;color:var(--muted);font-size:12px;margin-top:8px">— written by AI, refreshes every 15 min</li>';
     } else {
       $('brief').innerHTML =
-        `<li>🆕 <b>${br.new_today}</b> new tickets in the last 24 hours.</li>` +
-        (br.spike ? `<li>📈 Emerging cluster: <b>${esc(br.spike.category)}</b> — ${br.spike.this_week} this week vs ${br.spike.prev_week} last week.</li>` : '') +
-        `<li>✍️ <b>${br.pending_drafts.length}</b> sensitive drafts awaiting approval.</li>` +
-        `<li>⏳ <b>${br.awaiting_citizen}</b> tickets awaiting citizen reply.</li>` +
-        (br.auto_sent_24h ? `<li>🤖 <b>${br.auto_sent_24h}</b> routine replies auto-sent in the last 24 hours.</li>` : '');
+        `<li><b>${br.new_today}</b> new tickets in the last 24 hours.</li>` +
+        (br.spike ? `<li>Emerging cluster: <b>${esc(br.spike.category)}</b> — ${br.spike.this_week} this week vs ${br.spike.prev_week} last week.</li>` : '') +
+        `<li><b>${br.pending_drafts.length}</b> sensitive drafts awaiting approval.</li>` +
+        `<li><b>${br.awaiting_citizen}</b> tickets awaiting citizen reply.</li>` +
+        (br.auto_sent_24h ? `<li><b>${br.auto_sent_24h}</b> routine replies auto-sent in the last 24 hours.</li>` : '');
     }
   } catch(e){ $('brief').innerHTML = '<li>Could not load brief.</li>'; }
   try {
@@ -293,7 +348,7 @@ async function loadOverview(){
       <div class="trow" onclick="openTicket('${m.ticket_id}')">
         <div class="id">${esc(m.ticket_id)}</div>
         <div class="who"><b>${esc(m.citizen_name||'Citizen')}</b><span>${esc(m.category)}</span></div>
-        <div class="msg">🤖 ${esc(m.body)}</div>
+        <div class="msg">${esc(m.body)}</div>
         <span class="pill p-in_progress">${new Date(m.created_at).toLocaleString()}</span>
       </div>`).join('') : '<div class="empty">No auto-sent replies yet.</div>';
   } catch(e){}
@@ -303,7 +358,7 @@ function ticketRow(t, showAddr){
   return `<div class="trow" onclick="openTicket('${t.id}')">
     <div class="id">${esc(t.id)}</div>
     <div class="who"><b>${esc(t.citizen_name||'Citizen')}</b><span>${esc(t.category)}${t.sensitive ? ' · <b style="color:var(--red)">sensitive</b>' : ''}${t.awaiting_name ? ' · <b style="color:var(--amber)">awaiting name</b>' : ''}</span></div>
-    ${showAddr && t.issue_address ? `<div class="addr">📍 ${esc(t.issue_address)}</div>` : ''}
+    ${showAddr && t.issue_address ? `<div class="addr">${esc(t.issue_address)}</div>` : ''}
     <div class="msg">${esc(t.last_message)}</div>
     ${kindPill(t.kind)}
     <span class="pill pr-${t.priority}">${t.priority}</span>
@@ -316,7 +371,7 @@ async function loadInbox(){
   $('inbox').innerHTML = list.length ? list.map(t=>ticketRow(t, true)).join('') : '<div class="empty">No tickets here yet.</div>';
   $('chips').innerHTML = [['','All'],['new','New'],['in_progress','In progress'],['awaiting_citizen','Awaiting citizen'],['resolved','Resolved']]
     .map(([v,l])=>`<button class="chip ${filter===v?'active':''}" onclick="filter='${v}';loadInbox()">${l}</button>`).join('');
-  $('kindChips').innerHTML = [['','All'],['issue','🛠️ Issues'],['event','🎉 Events']]
+  $('kindChips').innerHTML = [['','All'],['issue','Issues'],['event','Events']]
     .map(([v,l])=>`<button class="chip ${kindFilter===v?'active':''}" onclick="kindFilter='${v}';loadInbox()">${l}</button>`).join('');
 }
 async function loadIssues(){
@@ -368,7 +423,7 @@ async function loadInsights(force){
         <div class="body">
           <b>${esc(i.topic)}</b> <span class="pill tr-${i.trend}">${i.trend}</span> <span class="pill p-new">${i.ticket_count} tickets</span>
           <div class="sum">${esc(i.summary)}</div>
-          <div class="act">👉 ${esc(i.suggested_action)}</div>
+          <div class="act">${esc(i.suggested_action)}</div>
         </div>
       </div>`).join('') : '<div class="empty">Not enough ticket data yet.</div>';
     $('webInsList').innerHTML = web.length ? web.map(i=>{
@@ -376,11 +431,11 @@ async function loadInsights(force){
       try { srcs = JSON.parse(i.urls || '[]'); } catch(e){}
       return `
       <div class="insight">
-        <div class="rank">🌐</div>
+        <div class="rank">${SPARK}</div>
         <div class="body">
           <b>${esc(i.topic)}</b> <span class="pill tr-${i.trend}">${i.trend}</span>
           <div class="sum">${esc(i.summary)}</div>
-          <div class="act">👉 ${esc(i.suggested_action)}</div>
+          <div class="act">${esc(i.suggested_action)}</div>
           ${srcs.length ? `<div class="srcs">Sources: ${srcs.map(s=>`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title||s.url)}</a>`).join(' · ')}</div>` : ''}
         </div>
       </div>`;}).join('') : '<div class="empty">No web insights yet — they are researched on the next refresh.</div>';
@@ -391,7 +446,7 @@ function refreshInsights(force){ loadInsights(force); }
 async function loadAsk(){
   if(askLoaded) return; askLoaded = true;
   const h = await api('/api/ask/history');
-  $('askThread').innerHTML = h.length ? h.map(m=>`<div class="amsg ${m.role==='user'?'user':'ai'}">${esc(m.content)}</div>`).join('')
+  $('askThread').innerHTML = h.length ? h.map(m=> m.role==='user' ? `<div class="amsg user">${esc(m.content)}</div>` : `<div class="amsg ai"><span class="aiava">${SPARK}</span><span class="aitxt">${esc(m.content)}</span></div>`).join('')
     : '<div class="empty">Ask me anything about your constituency — top issues, specific citizens, upcoming events, trends.</div>';
   $('askThread').scrollTop = $('askThread').scrollHeight;
 }
@@ -399,13 +454,13 @@ async function askSend(){
   const inp = $('askInput'), q = inp.value.trim();
   if(!q) return;
   inp.value = '';
-  $('askThread').innerHTML += `<div class="amsg user">${esc(q)}</div><div class="amsg ai" id="askTyping">Thinking…</div>`;
+  $('askThread').innerHTML += `<div class="amsg user">${esc(q)}</div><div class="amsg ai" id="askTyping"><span class="aiava">${SPARK}</span><span class="aitxt"><span class="thinking">Thinking…</span></span></div>`;
   $('askThread').scrollTop = $('askThread').scrollHeight;
   try {
     const r = await api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q})});
-    $('askTyping').outerHTML = `<div class="amsg ai">${esc(r.answer)}</div>`;
+    $('askTyping').outerHTML = `<div class="amsg ai"><span class="aiava">${SPARK}</span><span class="aitxt">${esc(r.answer)}</span></div>`;
   } catch(e){
-    $('askTyping').outerHTML = `<div class="amsg ai">Sorry — I couldn't answer that just now. (${esc(e.message)})</div>`;
+    $('askTyping').outerHTML = `<div class="amsg ai"><span class="aiava">${SPARK}</span><span class="aitxt">Sorry — I couldn't answer that just now. (${esc(e.message)})</span></div>`;
   }
   $('askThread').scrollTop = $('askThread').scrollHeight;
 }
@@ -428,8 +483,8 @@ async function openTicket(id){
   cur = await api('/api/tickets/'+id);
   $('dTitle').textContent = cur.id + ' · ' + (cur.citizen_name||'Citizen') + ' · ' + statusLabel(cur.status);
   let extra = '';
-  if(cur.kind==='event') extra += `<div style="font-size:13px;margin-bottom:8px">🎉 <b>${esc(cur.event_datetime||'Date TBA')}</b>${cur.venue?' · '+esc(cur.venue):''}</div>`;
-  else if(cur.issue_address) extra += `<div style="font-size:13px;margin-bottom:8px">📍 ${esc(cur.issue_address)}</div>`;
+  if(cur.kind==='event') extra += `<div style="font-size:13px;margin-bottom:8px"><b>${esc(cur.event_datetime||'Date TBA')}</b>${cur.venue?' · '+esc(cur.venue):''}</div>`;
+  else if(cur.issue_address) extra += `<div style="font-size:13px;margin-bottom:8px">${esc(cur.issue_address)}</div>`;
   $('dThread').innerHTML = extra + cur.messages.map(m=>`<div class="bub ${m.direction}">${esc(m.body)}<span class="t">${new Date(m.created_at).toLocaleString()}</span></div>`).join('');
   $('dDraft').value = cur.pending_draft || '';
   $('dCustom').value = '';
