@@ -38,6 +38,36 @@ const APP_SECRET = process.env.WHATSAPP_APP_SECRET || '';
 const REP_NAME = process.env.REP_NAME || 'Arjun Deshpande';
 const CONFIGURED = Boolean(WA_TOKEN && PHONE_NUMBER_ID);
 
+// ---------- dashboard password gate (politician portal) ----------
+// Set DASHBOARD_PASSWORD in the environment. No password configured -> locked for everyone (fail closed).
+// The Meta webhook (/webhook) and Render health check (/api/health) stay public; everything else needs the cookie.
+const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || '';
+const AUTH_SALT = crypto.randomBytes(16).toString('hex'); // per-boot: restarts require re-login
+const AUTH_COOKIE = 'sp_auth';
+function authToken() {
+  return crypto.createHash('sha256').update(AUTH_SALT + '\n' + DASHBOARD_PASSWORD).digest('hex');
+}
+function getCookie(req, name) {
+  const h = req.headers.cookie || '';
+  for (const part of h.split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return '';
+}
+function isAuthed(req) {
+  if (!DASHBOARD_PASSWORD) return false;
+  const tok = getCookie(req, AUTH_COOKIE);
+  if (!tok) return false;
+  const a = Buffer.from(tok), b = Buffer.from(authToken());
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function requireAuth(req, res, next) {
+  if (isAuthed(req)) return next();
+  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'login required' });
+  return res.redirect('/login');
+}
+
 // ---------- storage (SQLite, zero extra deps via node:sqlite) ----------
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'sampark.db');
 try { fs.mkdirSync(path.dirname(DB_PATH), { recursive: true }); } catch (e) { /* exists */ }
@@ -176,8 +206,8 @@ async function sendWhatsApp(to, body) {
 }
 
 // ---------- app ----------
+// Public first: Meta webhook (must stay open), Render health check, login/logout.
 const app = express();
-app.use(express.static(path.join(__dirname, 'public')));
 
 // Meta webhook verification (GET)
 app.get('/webhook', (req, res) => {
@@ -236,6 +266,28 @@ app.post('/webhook', express.json({ verify: (req, _res, buf) => { req.rawBody = 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, configured: CONFIGURED, rep: REP_NAME, now: Date.now(), ai: { configured: ai.isConfigured(), provider: ai.provider } });
 });
+
+// Politician-portal login (public). Sets an httpOnly auth cookie on success.
+app.get('/login', (req, res) => {
+  if (isAuthed(req)) return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+app.post('/login', express.urlencoded({ extended: false }), (req, res) => {
+  const pw = String(req.body.password || '');
+  if (DASHBOARD_PASSWORD && pw === DASHBOARD_PASSWORD) {
+    res.cookie(AUTH_COOKIE, authToken(), { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 30 * 24 * 3600 * 1000 });
+    return res.redirect('/');
+  }
+  return res.redirect('/login?e=1');
+});
+app.get('/logout', (req, res) => {
+  res.clearCookie(AUTH_COOKIE, { path: '/' });
+  res.redirect('/login');
+});
+
+// Everything below requires the dashboard password (static UI + API).
+app.use(requireAuth);
+app.use(express.static(path.join(__dirname, 'public')));
 
 function ticketSummary(t) {
   const last = db.prepare('SELECT body, direction, created_at FROM messages WHERE ticket_id=? ORDER BY id DESC LIMIT 1').get(t.id);

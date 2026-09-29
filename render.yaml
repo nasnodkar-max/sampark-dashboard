@@ -4,10 +4,12 @@ services:
   - type: web
     name: sampark-dashboard
     runtime: node
-    plan: free
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /api/health
+    # NOTE: no persistent disk — free tier. The SQLite DB lives at ./data/
+    # and resets when the service restarts. Add a disk (Starter plan, $7/mo)
+    # and set DB_PATH to /var/sampark-data/sampark.db for persistence.
     envVars:
       - key: DB_PATH
         value: ./data/sampark.db
@@ -17,6 +19,10 @@ services:
         value: anthropic
       - key: ANTHROPIC_MODEL
         value: claude-haiku-4-5-20251001
-      # Secrets — Render will prompt for these on deploy:
+      # Secrets — set these in the Render dashboard after deploy:
+      # WEBHOOK_VERIFY_TOKEN, WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID,
+      # WHATSAPP_APP_SECRET, ANTHROPIC_API_KEY / OPENAI_API_KEY, DASHBOARD_PASSWORD
       - key: WEBHOOK_VERIFY_TOKEN
+        sync: false
+      - key: DASHBOARD_PASSWORD
         sync: false
