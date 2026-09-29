@@ -381,7 +381,7 @@ async function loadOverview(){
         <div class="msg">${esc(m.body)}</div>
         <span class="pill p-in_progress">${new Date(m.created_at).toLocaleString()}</span>
       </div>`).join('') : '<div class="empty">No auto-sent replies yet.</div>';
-  } catch(e){}
+  } catch(e){ $('autosent').innerHTML = '<div class="empty">Could not load auto-sent replies — refresh the page. If this persists, the server may be restarting.</div>'; }
 }
 
 function ticketRow(t, showAddr){
