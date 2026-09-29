@@ -70,6 +70,7 @@
 <header>
   <div><div class="logo">SAMPARK <span>·</span></div><div class="sub" id="repsub">Constituency Brain</div></div>
   <div class="badge warn" id="conn">checking…</div>
+  <a href="/logout" style="color:#fff;opacity:.65;font-size:12px;text-decoration:none">Logout</a>
 </header>
 <div class="wrap">
   <div class="banner" id="cfgBanner" style="display:none">⚠️ WhatsApp API not connected — the dashboard works, but sending is disabled. Set <b>WHATSAPP_TOKEN</b> and <b>WHATSAPP_PHONE_NUMBER_ID</b> in <b>.env</b> (see README), then restart.</div>
@@ -122,7 +123,7 @@ const esc = s => String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>
 function toast(m){ const t=$('toast'); t.textContent=m; t.style.display='block'; setTimeout(()=>t.style.display='none',2600); }
 const statusLabel = s => ({new:'New',in_progress:'In progress',awaiting_citizen:'Awaiting citizen',resolved:'Resolved'}[s]||s);
 
-async function api(p, opt){ const r = await fetch(p, opt); const j = await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.error||('HTTP '+r.status)); return j; }
+async function api(p, opt){ const r = await fetch(p, opt); if(r.status===401){ location.href='/login'; throw new Error('login required'); } const j = await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.error||('HTTP '+r.status)); return j; }
 
 async function refresh(){
   try {
