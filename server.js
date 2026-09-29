@@ -102,6 +102,8 @@ if (!db.prepare("SELECT v FROM meta WHERE k='next_seq'").get()) {
 }
 // lightweight migration: track whether a draft came from the AI or the template fallback
 try { db.exec("ALTER TABLE tickets ADD COLUMN draft_source TEXT DEFAULT 'template'"); } catch (e) { /* already there */ }
+// lightweight migration: onboarding flag — 1 while we're still waiting for the citizen's name
+try { db.exec("ALTER TABLE tickets ADD COLUMN awaiting_name INTEGER DEFAULT 0"); } catch (e) { /* already there */ }
 function nextTicketId() {
   const row = db.prepare("SELECT v FROM meta WHERE k='next_seq'").get();
   const n = parseInt(row.v, 10);
@@ -124,6 +126,19 @@ function detectCategory(text) {
 }
 function detectPriority(text) {
   return /urgent|emergency|accident|fire|hospital|immediately/i.test(text) ? 'High' : 'Medium';
+}
+// Template for the onboarding ask: a first-time citizen is asked for their name.
+function nameRequestDraft() {
+  return `Namaste 🙏 Thanks for reaching out to Sampark. Could you please share your name so our office can assist you better? — Team ${REP_NAME}`;
+}
+// Template-mode name capture: accept short, name-shaped replies only.
+function fallbackName(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t || t.length <= 2 || t.length > 40) return null;
+  if (t.split(' ').length > 3) return null;
+  if (!/^[\p{L}\p{M} .'-]+$/u.test(t)) return null;
+  if (/[?!.]/.test(t)) return null; // looks like a sentence, not a name
+  return t;
 }
 // TODO(product): replace template drafts with the LLM drafting service.
 function generateDraft(ticket, text) {
@@ -165,20 +180,73 @@ async function handleIncoming({ waId, name, text, waMessageId, ts }) {
         language = cls.language || null;
       }
     } catch (e) { console.error('AI classify failed, using keywords:', e.message); }
+    // Returning citizen? Reuse the name we already captured — don't ask again.
+    const known = db.prepare("SELECT citizen_name FROM tickets WHERE wa_id=? AND citizen_name IS NOT NULL AND citizen_name != '' ORDER BY updated_at DESC LIMIT 1").get(waId);
+    const awaitingName = known ? 0 : 1;
     ticket = {
-      id, wa_id: waId, citizen_name: name, category,
-      priority, status: 'new',
+      id, wa_id: waId, citizen_name: known ? known.citizen_name : name, category,
+      priority, status: 'new', awaiting_name: awaitingName,
       pending_draft: null, created_at: ts || now, updated_at: now,
     };
-    ticket.pending_draft = generateDraft(ticket, text); // template fallback
-    ticket.draft_source = 'template';
-    try {
-      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: name, category, language, text });
-      if (aiDraft) { ticket.pending_draft = aiDraft; ticket.draft_source = 'ai'; }
-    } catch (e) { console.error('AI draft failed, using template:', e.message); }
-    db.prepare(`INSERT INTO tickets (id, wa_id, citizen_name, category, priority, status, pending_draft, draft_source, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(id, waId, name, ticket.category, ticket.priority, 'new', ticket.pending_draft, ticket.draft_source, ticket.created_at, now);
+    if (awaitingName) {
+      // First contact: the agent asks for the citizen's name (politician still approves the send).
+      ticket.pending_draft = nameRequestDraft();
+      ticket.draft_source = 'template';
+      try {
+        const aiAsk = await ai.generateNameRequest({ repName: REP_NAME, language });
+        if (aiAsk) { ticket.pending_draft = aiAsk; ticket.draft_source = 'ai'; }
+      } catch (e) { console.error('AI name-request failed, using template:', e.message); }
+    } else {
+      ticket.pending_draft = generateDraft(ticket, text); // template fallback
+      ticket.draft_source = 'template';
+      try {
+        const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text });
+        if (aiDraft) { ticket.pending_draft = aiDraft; ticket.draft_source = 'ai'; }
+      } catch (e) { console.error('AI draft failed, using template:', e.message); }
+    }
+    db.prepare(`INSERT INTO tickets (id, wa_id, citizen_name, category, priority, status, awaiting_name, pending_draft, draft_source, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(id, waId, ticket.citizen_name, ticket.category, ticket.priority, 'new', awaitingName, ticket.pending_draft, ticket.draft_source, ticket.created_at, now);
+  } else if (ticket.awaiting_name) {
+    // Citizen answered the name request — try to capture their name.
+    let captured = null;
+    try { captured = await ai.extractName(text); } catch (e) { console.error('AI name extract failed:', e.message); }
+    if (!captured) captured = fallbackName(text);
+    const status = ticket.status === 'awaiting_citizen' ? 'in_progress' : ticket.status;
+    if (captured) {
+      // Name captured: draft the reply to their ORIGINAL issue, personalized.
+      const first = db.prepare("SELECT body FROM messages WHERE ticket_id=? AND direction='in' ORDER BY id ASC LIMIT 1").get(ticket.id);
+      const issueText = first?.body || text;
+      ticket.citizen_name = captured;
+      ticket.awaiting_name = 0;
+      ticket.pending_draft = generateDraft(ticket, issueText);
+      ticket.draft_source = 'template';
+      try {
+        const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: captured, category: ticket.category, language: null, text: issueText });
+        if (aiDraft) { ticket.pending_draft = aiDraft; ticket.draft_source = 'ai'; }
+      } catch (e) { console.error('AI draft failed, using template:', e.message); }
+      db.prepare('UPDATE tickets SET citizen_name=?, awaiting_name=0, pending_draft=?, draft_source=?, status=?, updated_at=? WHERE id=?')
+        .run(captured, ticket.pending_draft, ticket.draft_source, status, now, ticket.id);
+      ticket.status = status;
+    } else {
+      // Not a name. Ask at most twice, then stop and treat it as a normal ticket.
+      const inCount = db.prepare("SELECT COUNT(*) c FROM messages WHERE ticket_id=? AND direction='in'").get(ticket.id).c;
+      if (inCount >= 2) {
+        ticket.awaiting_name = 0;
+        ticket.pending_draft = generateDraft(ticket, text);
+        ticket.draft_source = 'template';
+        try {
+          const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category: ticket.category, language: null, text });
+          if (aiDraft) { ticket.pending_draft = aiDraft; ticket.draft_source = 'ai'; }
+        } catch (e) { console.error('AI draft failed, using template:', e.message); }
+        db.prepare('UPDATE tickets SET awaiting_name=0, pending_draft=?, draft_source=?, status=?, updated_at=? WHERE id=?')
+          .run(ticket.pending_draft, ticket.draft_source, status, now, ticket.id);
+        ticket.status = status;
+      } else {
+        db.prepare('UPDATE tickets SET updated_at=?, status=? WHERE id=?').run(now, status, ticket.id);
+        ticket.status = status;
+      }
+    }
   } else {
     // citizen replied (e.g. to a "Reply 1 or 2" follow-up) -> back to in_progress
     const status = ticket.status === 'awaiting_citizen' ? 'in_progress' : ticket.status;
