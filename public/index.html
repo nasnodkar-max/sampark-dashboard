@@ -117,6 +117,25 @@
   .askrow input:focus{outline:none;border-color:var(--terra);box-shadow:0 0 0 3px var(--terra-soft)}
   .sendbtn{width:42px;height:42px;flex:none;border:none;border-radius:50%;background:var(--terra);color:#fff;font-size:19px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 10px rgba(192,91,43,.35)}
   .sendbtn:hover{background:var(--terra-dark)}
+  .chatwrap{max-width:780px;margin:0 auto;padding:6px 10px 0;display:flex;flex-direction:column;min-height:calc(100vh - 230px)}
+  .chatgreet{text-align:center;padding:34px 16px 6px}
+  .chatgreet .mark{width:54px;height:54px;border-radius:17px;background:var(--terra);color:#fff;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(192,91,43,.35);margin-bottom:16px}
+  .chatgreet .mark svg{width:30px;height:30px}
+  .chatgreet h1{font-size:27px;margin:0 0 8px;font-weight:650;letter-spacing:-.01em}
+  .chatgreet .asksub{font-size:13px;color:var(--muted)}
+  .suggest{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:28px auto 0;max-width:660px;text-align:left}
+  .suggest button{background:#fff;border:1px solid var(--line);border-radius:15px;padding:13px 15px;font-size:13.5px;line-height:1.45;color:var(--ink);cursor:pointer;text-align:left;font-family:inherit;box-shadow:var(--shadow);transition:border-color .15s}
+  .suggest button:hover{border-color:var(--terra)}
+  .suggest button b{display:block;font-size:13.5px;margin-bottom:2px}
+  .suggest button span{color:var(--muted);font-size:12.5px}
+  .chatthread{flex:1;overflow-y:auto;padding:14px 6px;display:flex;flex-direction:column;gap:6px}
+  .chatthread:empty{padding:0}
+  .composer{background:#fff;border:1px solid var(--line);border-radius:26px;padding:9px 9px 9px 22px;display:flex;align-items:flex-end;gap:9px;box-shadow:0 5px 22px rgba(60,50,40,.09);margin-top:14px}
+  .composer:focus-within{border-color:var(--terra);box-shadow:0 0 0 3px var(--terra-soft)}
+  .composer textarea{flex:1;border:none;background:none;resize:none;font-family:inherit;font-size:15px;line-height:1.55;padding:11px 0;max-height:150px;color:var(--ink)}
+  .composer textarea:focus{outline:none}
+  .fineprint{text-align:center;font-size:11.5px;color:var(--muted);padding:10px 0 20px}
+  @media(max-width:640px){.suggest{grid-template-columns:1fr}}
   .search{width:100%;border:1px solid var(--line);background:#fff;border-radius:999px;padding:11px 18px;font-size:14px;margin-bottom:12px;font-family:inherit;color:var(--ink)}
   .search:focus{outline:none;border-color:var(--terra);box-shadow:0 0 0 3px var(--terra-soft)}
   .drawer{position:fixed;top:0;right:0;width:min(460px,100%);height:100%;background:#FCFBF6;border-left:1px solid var(--line);box-shadow:-8px 0 30px rgba(90,75,50,.12);z-index:50;display:none;flex-direction:column}
@@ -155,19 +174,41 @@
   <a href="/logout" class="logout">Logout</a>
 </header>
 <nav class="tabs" id="tabs">
-  <button data-tab="overview" class="active" onclick="showTab('overview')">Overview</button>
+  <button data-tab="ask" class="active" onclick="showTab('ask')"><span class="tabmark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span>Ask Sampark</button>
+  <button data-tab="overview" onclick="showTab('overview')">Overview</button>
   <button data-tab="tickets" onclick="showTab('tickets')">Tickets<span class="cnt" id="cntTickets"></span></button>
   <button data-tab="issues" onclick="showTab('issues')">Issues</button>
   <button data-tab="events" onclick="showTab('events')">Events<span class="cnt" id="cntEvents"></span></button>
   <button data-tab="citizens" onclick="showTab('citizens')">Citizens<span class="cnt" id="cntCitizens"></span></button>
   <button data-tab="insights" onclick="showTab('insights')">Insights</button>
-  <button data-tab="ask" onclick="showTab('ask')"><span class="tabmark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span>Ask Sampark</button>
   <button data-tab="approvals" onclick="showTab('approvals')">Approvals<span class="cnt" id="cntApprovals"></span></button>
 </nav>
 <div class="wrap">
   <div class="banner" id="cfgBanner" style="display:none">⚠️ WhatsApp API not connected — the dashboard works, but sending is disabled. Set <b>WHATSAPP_TOKEN</b> and <b>WHATSAPP_PHONE_NUMBER_ID</b> in the host env vars, then restart.</div>
 
-  <div class="tabpage active" id="page-overview">
+  <div class="tabpage active" id="page-ask">
+    <div class="chatwrap">
+      <div class="chatgreet" id="askGreet">
+        <span class="mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span>
+        <h1>Ask Sampark</h1>
+        <div class="asksub">GenAI constituency assistant · answers from live data <span class="tag genai">✦ GenAI</span></div>
+        <div class="suggest">
+          <button onclick="askChip(this)"><b>Top water complaints</b><span>What are the top water complaints in Fatorda?</span></button>
+          <button onclick="askChip(this)"><b>Awaiting citizen reply</b><span>How many tickets are waiting on citizen replies?</span></button>
+          <button onclick="askChip(this)"><b>Worst-affected areas</b><span>Which areas have the most open issues right now?</span></button>
+          <button onclick="askChip(this)"><b>Upcoming events</b><span>Any citizen events or invitations coming up?</span></button>
+        </div>
+      </div>
+      <div class="askbox chatthread" id="askThread"></div>
+      <div class="composer">
+        <textarea id="askInput" rows="1" placeholder="Ask about issues, citizens, events…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();askSend()}"></textarea>
+        <button class="sendbtn" onclick="askSend()" title="Send">↑</button>
+      </div>
+      <div class="fineprint">Sampark AI answers from live constituency data — ticket counts, areas, citizens and today's insights. It never invents numbers.</div>
+    </div>
+  </div>
+
+  <div class="tabpage" id="page-overview">
     <div class="card"><h2>2-Minute Daily Brief</h2><ul class="brief" id="brief"><li>Loading…</li></ul></div>
     <div class="kpis" id="kpis"></div>
     <div class="card"><h2>Issue mix — last 7 days</h2><div id="mix"></div></div>
@@ -222,17 +263,6 @@
     </div>
   </div>
 
-  <div class="tabpage" id="page-ask">
-    <div class="card"><div class="askhead"><span class="mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span><div><h2>Ask Sampark</h2><div class="asksub">GenAI constituency assistant · answers from live data</div></div><span class="tag genai">✦ GenAI</span></div>
-      <div class="askbox" id="askThread" style="max-height:420px;overflow-y:auto;margin-bottom:8px"></div>
-      <div class="askrow">
-        <input id="askInput" placeholder="Ask about issues, citizens, events… e.g. “What are the top water complaints in Fatorda?”" onkeydown="if(event.key==='Enter')askSend()">
-        <button class="sendbtn" onclick="askSend()" title="Send">↑</button>
-      </div>
-      <div style="font-size:12px;color:var(--muted);margin-top:8px">Sampark AI answers from live constituency data — ticket counts, areas, citizens and today's insights. It never invents numbers.</div>
-    </div>
-  </div>
-
   <div class="tabpage" id="page-approvals">
     <div class="card"><h2>Approvals — sensitive drafts, you decide <span class="tag">human approval required</span></h2><div id="approvals"></div></div>
   </div>
@@ -256,7 +286,7 @@
 </div>
 <div class="toast" id="toast"></div>
 <script>
-let cur = null, filter = '', kindFilter = '', issueFilter = '', autoOn = true, activeTab = 'overview', askLoaded = false;
+let cur = null, filter = '', kindFilter = '', issueFilter = '', autoOn = true, activeTab = 'ask', askLoaded = false;
 const $ = id => document.getElementById(id);
 const SPARK='<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg>';
 const esc = s => String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -446,14 +476,18 @@ function refreshInsights(force){ loadInsights(force); }
 async function loadAsk(){
   if(askLoaded) return; askLoaded = true;
   const h = await api('/api/ask/history');
-  $('askThread').innerHTML = h.length ? h.map(m=> m.role==='user' ? `<div class="amsg user">${esc(m.content)}</div>` : `<div class="amsg ai"><span class="aiava">${SPARK}</span><span class="aitxt">${esc(m.content)}</span></div>`).join('')
-    : '<div class="empty">Ask me anything about your constituency — top issues, specific citizens, upcoming events, trends.</div>';
+  if(h.length){
+    $('askGreet').style.display = 'none';
+    $('askThread').innerHTML = h.map(m=> m.role==='user' ? `<div class="amsg user">${esc(m.content)}</div>` : `<div class="amsg ai"><span class="aiava">${SPARK}</span><span class="aitxt">${esc(m.content)}</span></div>`).join('');
+  }
   $('askThread').scrollTop = $('askThread').scrollHeight;
 }
+function askChip(btn){ $('askInput').value = btn.querySelector('span').textContent.trim(); askSend(); }
 async function askSend(){
   const inp = $('askInput'), q = inp.value.trim();
   if(!q) return;
-  inp.value = '';
+  inp.value = ''; inp.style.height = 'auto';
+  $('askGreet').style.display = 'none';
   $('askThread').innerHTML += `<div class="amsg user">${esc(q)}</div><div class="amsg ai" id="askTyping"><span class="aiava">${SPARK}</span><span class="aitxt"><span class="thinking">Thinking…</span></span></div>`;
   $('askThread').scrollTop = $('askThread').scrollHeight;
   try {
@@ -522,6 +556,7 @@ async function simulate(){
   refreshHeader(); refreshTab();
 }
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDrawer(); });
+$('askInput').addEventListener('input', function(){ this.style.height='auto'; this.style.height=Math.min(this.scrollHeight,150)+'px'; });
 refreshHeader(); refreshTab(); setInterval(()=>{ refreshHeader(); refreshTab(); }, 5000);
 </script>
 </body>
