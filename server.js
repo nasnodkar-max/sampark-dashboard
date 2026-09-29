@@ -297,14 +297,47 @@ async function handleIncoming({ waId, name, text, waMessageId, ts }) {
         ticket.draft_source = sent ? null : src;
         ticket.status = status;
       } else {
-        db.prepare('UPDATE tickets SET updated_at=?, status=? WHERE id=?').run(now, status, ticket.id);
+        // Not a name on the first retry: never stay silent — acknowledge and ask for the name again (automatic).
+        const ack = "Thanks for writing in! Could you please share your name so our office can log your request properly?";
+        const sent = autoReplyOn() && await tryAutoSend(ticket, ack, status);
+        db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, updated_at=?, status=? WHERE id=?')
+          .run(sent ? null : ack, sent ? null : 'template', now, status, ticket.id);
+        ticket.pending_draft = sent ? null : ack;
+        ticket.draft_source = sent ? null : 'template';
         ticket.status = status;
       }
     }
   } else {
-    // citizen replied (e.g. to a "Reply 1 or 2" follow-up) -> back to in_progress
+    // Follow-up message on an existing ticket (e.g. a question about their issue):
+    // classify it, then auto-reply as the office for routine topics or queue for
+    // approval when sensitive — never leave the citizen hanging.
     const status = ticket.status === 'awaiting_citizen' ? 'in_progress' : ticket.status;
-    db.prepare('UPDATE tickets SET updated_at=?, status=? WHERE id=?').run(now, status, ticket.id);
+    let category = ticket.category;
+    let sensitive = ticket.sensitive === 1;
+    let language = null;
+    try {
+      const cls = await ai.classifyMessage(text);
+      if (cls) {
+        category = cls.category || category;
+        if (cls.sensitive === true) sensitive = true;
+        language = cls.language || null;
+      } else if (detectSensitive(text)) {
+        sensitive = true;
+      }
+    } catch (e) { console.error('AI classify failed, using keywords:', e.message); if (detectSensitive(text)) sensitive = true; }
+    let draftText = generateDraft({ ...ticket, category }, text);
+    let src = 'template';
+    try {
+      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text });
+      if (aiDraft) { draftText = aiDraft; src = 'ai'; }
+    } catch (e) { console.error('AI draft failed, using template:', e.message); }
+    const sent = !sensitive && autoReplyOn() && await tryAutoSend(ticket, draftText, status);
+    db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, category=?, sensitive=?, updated_at=?, status=? WHERE id=?')
+      .run(sent ? null : draftText, sent ? null : src, category, sensitive ? 1 : 0, now, status, ticket.id);
+    ticket.pending_draft = sent ? null : draftText;
+    ticket.draft_source = sent ? null : src;
+    ticket.category = category;
+    ticket.sensitive = sensitive ? 1 : 0;
     ticket.status = status;
   }
   db.prepare('INSERT INTO messages (ticket_id, direction, body, wa_message_id, created_at) VALUES (?,?,?,?,?)')
