@@ -147,6 +147,9 @@
   .bub.in{background:#fff;align-self:flex-start;border:1px solid var(--line);border-bottom-left-radius:4px}
   .bub.out{background:#EDE4CB;align-self:flex-end;border-bottom-right-radius:4px}
   .bub .t{display:block;font-size:10px;color:var(--muted);margin-top:4px;text-align:right}
+  .msgimg{max-width:230px;max-height:230px;border-radius:10px;display:block;margin:2px 0 6px;cursor:zoom-in;object-fit:cover}
+  .photoprev img{max-width:120px;max-height:120px;border-radius:8px;display:block;margin-bottom:6px}
+  .photoprev button{background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;padding:0;margin-bottom:6px}
   .dfoot{padding:14px 20px;border-top:1px solid var(--line);background:#FCFBF6}
   .dfoot textarea{width:100%;border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-size:14px;min-height:70px;font-family:inherit;background:#fff;color:var(--ink)}
   .dfoot textarea:focus{outline:none;border-color:var(--terra);box-shadow:0 0 0 3px var(--terra-soft)}
@@ -282,6 +285,15 @@
     </div>
     <div style="font-size:12px;color:var(--muted);margin:10px 0 6px">Or write a reply directly:</div>
     <div class="row"><input id="dCustom" placeholder="Type a reply…" style="flex:1;border:1px solid #d1d5db;border-radius:8px;padding:9px 12px;font-size:14px"><button class="btn primary" onclick="sendCustom()">Send</button></div>
+    <div style="margin-top:10px">
+      <div class="photoprev" id="photoPrev"></div>
+      <div class="row">
+        <input type="file" id="photoInput" accept="image/*" style="display:none" onchange="attachPhoto(this)">
+        <button class="btn ghost" onclick="document.getElementById('photoInput').click()">📷 Attach photo</button>
+        <button class="btn primary" id="sendPhotoBtn" style="display:none" onclick="sendPhoto()">Send photo</button>
+      </div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:4px">Share completed-work photos with the citizen — the text above becomes the caption.</div>
+    </div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -519,9 +531,14 @@ async function openTicket(id){
   let extra = '';
   if(cur.kind==='event') extra += `<div style="font-size:13px;margin-bottom:8px"><b>${esc(cur.event_datetime||'Date TBA')}</b>${cur.venue?' · '+esc(cur.venue):''}</div>`;
   else if(cur.issue_address) extra += `<div style="font-size:13px;margin-bottom:8px">${esc(cur.issue_address)}</div>`;
-  $('dThread').innerHTML = extra + cur.messages.map(m=>`<div class="bub ${m.direction}">${esc(m.body)}<span class="t">${new Date(m.created_at).toLocaleString()}</span></div>`).join('');
+  $('dThread').innerHTML = extra + cur.messages.map(m=>{
+    const img = m.media_path ? `<a href="/media/${esc(m.media_path)}" target="_blank" rel="noopener"><img src="/media/${esc(m.media_path)}" class="msgimg" loading="lazy" alt="Shared photo"></a>` : '';
+    const txt = m.body && m.body !== '[photo shared]' ? esc(m.body) : (img ? '' : esc(m.body));
+    return `<div class="bub ${m.direction}">${img}${txt}<span class="t">${new Date(m.created_at).toLocaleString()}</span></div>`;
+  }).join('');
   $('dDraft').value = cur.pending_draft || '';
   $('dCustom').value = '';
+  resetPhoto();
   $('drawer').classList.add('open');
   $('dThread').scrollTop = $('dThread').scrollHeight;
 }
@@ -541,6 +558,38 @@ async function sendCustom(){
   if(!cur) return; const v = $('dCustom').value.trim(); if(!v) return;
   try { await api('/api/tickets/'+cur.id+'/reply', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:v})}); toast('Reply sent'); }
   catch(e){ toast('Send failed: '+e.message); }
+  openTicket(cur.id); refreshHeader(); refreshTab();
+}
+let attachedPhoto = null;
+function resetPhoto(){
+  attachedPhoto = null;
+  $('photoPrev').innerHTML = '';
+  $('sendPhotoBtn').style.display = 'none';
+  const pi = $('photoInput'); if(pi) pi.value = '';
+}
+async function attachPhoto(input){
+  const f = input.files && input.files[0]; if(!f) return;
+  if(!f.type.startsWith('image/')){ toast('Please choose an image file'); return; }
+  if(f.size > 8*1024*1024){ toast('Image too large (max 8 MB)'); return; }
+  toast('Uploading photo…');
+  try {
+    const buf = await f.arrayBuffer();
+    const r = await fetch('/api/upload', {method:'POST', headers:{'Content-Type': f.type}, body: buf});
+    const j = await r.json();
+    if(!j.ok) throw new Error(j.error || 'upload failed');
+    attachedPhoto = j.file;
+    $('photoPrev').innerHTML = `<img src="/media/${esc(j.file)}" alt="Photo to send"><br><button onclick="resetPhoto()">Remove</button>`;
+    $('sendPhotoBtn').style.display = '';
+    toast('Photo ready — add a caption above, then Send photo');
+  } catch(e){ toast('Upload failed: '+e.message); }
+}
+async function sendPhoto(){
+  if(!cur || !attachedPhoto) return;
+  const caption = $('dCustom').value.trim();
+  try {
+    await api('/api/tickets/'+cur.id+'/send-image', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({file: attachedPhoto, caption})});
+    toast('Photo sent to citizen');
+  } catch(e){ toast('Send failed: '+e.message); }
   openTicket(cur.id); refreshHeader(); refreshTab();
 }
 async function setStatus(s){

@@ -1,5 +1,6 @@
 // Sampark real dashboard — Meta WhatsApp Cloud API webhook + politician dashboard API.
-// Text messages only (voice intake excluded by product scope).
+// Text + image messages (citizens share issue photos; the office shares completed-work photos).
+// Voice intake excluded by product scope.
 // Env: PORT, WEBHOOK_VERIFY_TOKEN, WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID,
 //      WHATSAPP_APP_SECRET (optional, enables webhook signature check), REP_NAME.
 
@@ -72,6 +73,19 @@ function requireAuth(req, res, next) {
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'sampark.db');
 try { fs.mkdirSync(path.dirname(DB_PATH), { recursive: true }); } catch (e) { /* exists */ }
 const db = new DatabaseSync(DB_PATH);
+// ---------- media storage (issue photos, completed-work photos) ----------
+// Lives next to the DB so it survives on the persistent disk in production.
+const MEDIA_DIR = process.env.MEDIA_DIR || path.join(path.dirname(DB_PATH), 'media');
+try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch (e) { /* exists */ }
+const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
+// Sanitize a media filename: basename only, strict charset, must exist under MEDIA_DIR.
+function mediaFilePath(name) {
+  const base = path.basename(String(name || ''));
+  if (!base || !/^[\w.\-]{1,120}$/.test(base)) return null;
+  const full = path.join(MEDIA_DIR, base);
+  if (path.dirname(full) !== MEDIA_DIR) return null;
+  return full;
+}
 db.exec(`
 CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY,
@@ -137,6 +151,9 @@ try { db.exec("ALTER TABLE tickets ADD COLUMN kind TEXT DEFAULT 'issue'"); } cat
 try { db.exec("ALTER TABLE tickets ADD COLUMN issue_address TEXT"); } catch (e) { /* already there */ }
 try { db.exec("ALTER TABLE tickets ADD COLUMN event_datetime TEXT"); } catch (e) { /* already there */ }
 try { db.exec("ALTER TABLE tickets ADD COLUMN venue TEXT"); } catch (e) { /* already there */ }
+// Message media: photos shared by citizens (issue photos) or the office (completed work).
+try { db.exec("ALTER TABLE messages ADD COLUMN media_type TEXT"); } catch (e) { /* already there */ }
+try { db.exec("ALTER TABLE messages ADD COLUMN media_path TEXT"); } catch (e) { /* already there */ }
 // Daily AI insights: top-10 constituency topics refreshed every day.
 // source = 'issues' (from ticket data) or 'web' (from web research); urls holds
 // JSON [{title,url}] for web insights.
@@ -335,8 +352,10 @@ function detailsConfirmPrefix(citizenName, ticket, details) {
 function findOpenTicket(waId) {
   return db.prepare("SELECT * FROM tickets WHERE wa_id=? AND status != 'resolved' ORDER BY updated_at DESC LIMIT 1").get(waId);
 }
-async function handleIncoming({ waId, name, text, waMessageId, ts }) {
+async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, mediaPath }) {
   const now = Date.now();
+  // A photo with no caption still needs classifiable text; the photo itself is stored on the message row.
+  if (mediaPath && !text) text = '[photo shared]';
   let ticket = findOpenTicket(waId);
   let isNew = false;
   // Citizens registry: every wa_id gets a row; first-time citizens onboard (name -> details).
@@ -506,8 +525,8 @@ async function handleIncoming({ waId, name, text, waMessageId, ts }) {
     ticket.sensitive = sensitive ? 1 : 0;
     ticket.status = status;
   }
-  db.prepare('INSERT INTO messages (ticket_id, direction, body, wa_message_id, created_at) VALUES (?,?,?,?,?)')
-    .run(ticket.id, 'in', text, waMessageId || null, ts || now);
+  db.prepare('INSERT INTO messages (ticket_id, direction, body, wa_message_id, media_type, media_path, created_at) VALUES (?,?,?,?,?,?,?)')
+    .run(ticket.id, 'in', text, waMessageId || null, mediaType || null, mediaPath || null, ts || now);
   markBriefDirty(); // new inbound message -> AI brief will regenerate (at most every 15 min)
   console.log(`[${new Date().toISOString()}] IN ${ticket.id} (${ticket.citizen_name}): ${text.slice(0, 80)}`);
   return { ticket, isNew };
@@ -520,6 +539,63 @@ async function sendWhatsApp(to, body) {
     method: 'POST',
     headers: { Authorization: `Bearer ${WA_TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ messaging_product: 'whatsapp', to, type: 'text', text: { preview_url: false, body } }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data?.error?.message || `WhatsApp send failed (HTTP ${r.status})`);
+  return data;
+}
+
+// Download an inbound WhatsApp media object by its media ID into MEDIA_DIR.
+// Returns { filename, contentType }. Only images are accepted.
+async function downloadWhatsAppMedia(mediaId) {
+  if (!CONFIGURED) throw new Error('WhatsApp API not configured (WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID)');
+  const metaR = await fetch(`https://graph.facebook.com/v21.0/${mediaId}`, {
+    headers: { Authorization: `Bearer ${WA_TOKEN}` },
+  });
+  const meta = await metaR.json().catch(() => ({}));
+  if (!metaR.ok || !meta?.url) throw new Error(meta?.error?.message || 'media URL lookup failed');
+  const r = await fetch(meta.url, { headers: { Authorization: `Bearer ${WA_TOKEN}` } });
+  if (!r.ok) throw new Error(`media download failed (HTTP ${r.status})`);
+  const ct = String(r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  if (!ct.startsWith('image/')) throw new Error(`unsupported media type: ${ct || 'unknown'}`);
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (!buf.length || buf.length > MAX_MEDIA_BYTES) throw new Error('image empty or too large (max 8 MB)');
+  const ext = (ct.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, '') || 'jpg';
+  const filename = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`;
+  fs.writeFileSync(path.join(MEDIA_DIR, filename), buf);
+  console.log(`[${new Date().toISOString()}] media saved: ${filename} (${buf.length} bytes, ${ct})`);
+  return { filename, contentType: ct };
+}
+
+// Upload a local image from MEDIA_DIR to WhatsApp, then send it as an image
+// message with an optional caption. Returns the Graph API response.
+async function sendWhatsAppImage(to, filename, caption) {
+  if (!CONFIGURED) throw new Error('WhatsApp API not configured (WHATSAPP_TOKEN / WHATSAPP_PHONE_NUMBER_ID)');
+  const full = mediaFilePath(filename);
+  if (!full || !fs.existsSync(full)) throw new Error('image not found');
+  const buf = fs.readFileSync(full);
+  if (!buf.length || buf.length > MAX_MEDIA_BYTES) throw new Error('image empty or too large (max 8 MB)');
+  const ext = path.extname(full).slice(1).toLowerCase() || 'jpg';
+  const mime = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' }[ext] || 'image/jpeg';
+  // 1) upload the media to get a media object ID
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('file', new Blob([buf], { type: mime }), path.basename(full));
+  const up = await fetch(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/media`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${WA_TOKEN}` },
+    body: form,
+  });
+  const upj = await up.json().catch(() => ({}));
+  if (!up.ok || !upj.id) throw new Error(upj?.error?.message || 'WhatsApp media upload failed');
+  // 2) send the image message referencing the uploaded media
+  const r = await fetch(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${WA_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp', to, type: 'image',
+      image: { id: upj.id, caption: String(caption || '').slice(0, 1024) || undefined },
+    }),
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data?.error?.message || `WhatsApp send failed (HTTP ${r.status})`);
@@ -559,15 +635,20 @@ app.post('/webhook', express.json({ verify: (req, _res, buf) => { req.rawBody = 
           const value = change.value || {};
           const contacts = value.contacts || [];
           for (const msg of value.messages || []) {
-            if (msg.type !== 'text' || !msg.text?.body) continue; // text-only scope
             const c = contacts.find((x) => x.wa_id === msg.from);
-            incoming.push({
+            const base = {
               waId: msg.from,
               name: c?.profile?.name || 'Citizen',
-              text: msg.text.body,
               waMessageId: msg.id,
               ts: msg.timestamp ? parseInt(msg.timestamp, 10) * 1000 : Date.now(),
-            });
+            };
+            if (msg.type === 'text' && msg.text?.body) {
+              incoming.push({ ...base, text: msg.text.body });
+            } else if (msg.type === 'image' && msg.image?.id) {
+              // Photo of an issue (or anything else) — caption may be empty.
+              incoming.push({ ...base, text: msg.image.caption || '', mediaId: msg.image.id, mediaType: 'image' });
+            }
+            // other message types (audio, video, documents, stickers, reactions) are ignored
           }
         }
       }
@@ -578,7 +659,18 @@ app.post('/webhook', express.json({ verify: (req, _res, buf) => { req.rawBody = 
   res.sendStatus(200); // always 200 fast so Meta doesn't retry-storm
   (async () => {
     for (const m of incoming) {
-      try { await handleIncoming(m); } catch (e) { console.error('handleIncoming error:', e.message); }
+      try {
+        if (m.mediaId) {
+          try {
+            const dl = await downloadWhatsAppMedia(m.mediaId);
+            m.mediaPath = dl.filename;
+          } catch (e) {
+            console.error('inbound image download failed:', e.message);
+            // keep the caption/text; the ticket still gets created without the photo
+          }
+        }
+        await handleIncoming(m);
+      } catch (e) { console.error('handleIncoming error:', e.message); }
     }
   })();
 });
@@ -608,12 +700,41 @@ app.get('/logout', (req, res) => {
 
 // Everything below requires the dashboard password (static UI + API).
 app.use(requireAuth);
+
+// Serve stored issue / completed-work photos (authenticated; no path traversal).
+app.get('/media/:file', (req, res) => {
+  const full = mediaFilePath(req.params.file);
+  if (!full || !fs.existsSync(full)) return res.sendStatus(404);
+  const ext = path.extname(full).toLowerCase();
+  const types = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' };
+  res.setHeader('Content-Type', types[ext] || 'application/octet-stream');
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  fs.createReadStream(full).pipe(res);
+});
+
+// Upload a photo from the politician's device (completed-work photos, etc.).
+// Client sends raw image bytes with Content-Type: image/* (no multipart dep needed).
+app.post('/api/upload', express.raw({ type: 'image/*', limit: '8mb' }), (req, res) => {
+  if (!req.body || !req.body.length) return res.status(400).json({ error: 'no image data' });
+  const ct = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  const ext = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' })[ct] || 'jpg';
+  const filename = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`;
+  try {
+    fs.writeFileSync(path.join(MEDIA_DIR, filename), req.body);
+  } catch (e) {
+    return res.status(500).json({ error: 'could not save image' });
+  }
+  res.json({ ok: true, file: filename });
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 function ticketSummary(t) {
-  const last = db.prepare('SELECT body, direction, created_at FROM messages WHERE ticket_id=? ORDER BY id DESC LIMIT 1').get(t.id);
+  const last = db.prepare('SELECT body, direction, media_path, created_at FROM messages WHERE ticket_id=? ORDER BY id DESC LIMIT 1').get(t.id);
   const unread = db.prepare("SELECT COUNT(*) c FROM messages WHERE ticket_id=? AND direction='in'").get(t.id).c;
-  return { ...t, last_message: last?.body || '', last_dir: last?.direction || null, last_at: last?.created_at || t.updated_at, inbound_count: unread };
+  let preview = last?.body || '';
+  if (last?.media_path && (!preview || preview === '[photo shared]')) preview = '📷 Photo';
+  else if (last?.media_path && preview) preview = '📷 ' + preview;
+  return { ...t, last_message: preview, last_dir: last?.direction || null, last_at: last?.created_at || t.updated_at, inbound_count: unread };
 }
 app.get('/api/tickets', (req, res) => {
   const { status, kind } = req.query;
@@ -779,7 +900,7 @@ const ASSISTANT_TOOL_DEFS = [
   },
   {
     name: 'get_ticket',
-    description: 'Full detail of one ticket: fields plus its complete WhatsApp message thread (oldest first).',
+    description: 'Full detail of one ticket: fields plus its complete WhatsApp message thread (oldest first). Messages with has_image=true include a photo (issue photo from the citizen or completed-work photo from the office).',
     input_schema: {
       type: 'object',
       properties: { ticket_id: { type: 'string', description: 'Ticket ID, e.g. SKT-1001' } },
@@ -840,8 +961,8 @@ async function runAssistantTool(name, input = {}) {
       ).get(String(input.ticket_id || '').slice(0, 20));
       if (!t) return { error: 'ticket not found' };
       t.messages = db.prepare(
-        "SELECT direction, substr(body,1,400) AS body, created_at FROM messages WHERE ticket_id=? ORDER BY created_at ASC LIMIT 60"
-      ).all(t.id);
+        "SELECT direction, substr(body,1,400) AS body, media_type, created_at FROM messages WHERE ticket_id=? ORDER BY created_at ASC LIMIT 60"
+      ).all(t.id).map((m) => ({ ...m, has_image: !!m.media_type }));
       return t;
     }
     case 'search_messages': {
@@ -927,6 +1048,25 @@ app.post('/api/tickets/:id/approve', express.json(), async (req, res) => {
     db.prepare('INSERT INTO messages (ticket_id, direction, body, wa_message_id, created_at) VALUES (?,?,?,?,?)')
       .run(t.id, 'out', text, wa.messages?.[0]?.id || null, Date.now());
     db.prepare("UPDATE tickets SET pending_draft=NULL, status='in_progress', updated_at=? WHERE id=?").run(Date.now(), t.id);
+    res.json({ ok: true, wa });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// Send a photo (e.g. completed work) with an optional caption via WhatsApp.
+// Body: { file: "<name from /api/upload>", caption: "..." }
+app.post('/api/tickets/:id/send-image', express.json(), async (req, res) => {
+  const t = db.prepare('SELECT * FROM tickets WHERE id=?').get(req.params.id);
+  if (!t) return res.status(404).json({ error: 'not found' });
+  const file = String(req.body.file || '');
+  const caption = String(req.body.caption || '').slice(0, 1024);
+  if (!file) return res.status(400).json({ error: 'no image' });
+  try {
+    const wa = await sendWhatsAppImage(t.wa_id, file, caption);
+    db.prepare('INSERT INTO messages (ticket_id, direction, body, wa_message_id, media_type, media_path, created_at) VALUES (?,?,?,?,?,?,?)')
+      .run(t.id, 'out', caption, wa.messages?.[0]?.id || null, 'image', path.basename(file), Date.now());
+    db.prepare("UPDATE tickets SET status='in_progress', updated_at=? WHERE id=?").run(Date.now(), t.id);
     res.json({ ok: true, wa });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -1027,10 +1167,16 @@ app.get('/api/brief', async (_req, res) => {
 
 // Local test simulator: injects a message exactly as if it came from WhatsApp (no Meta needed)
 app.post('/api/test/simulate', express.json(), async (req, res) => {
-  const { from, name, text } = req.body;
+  const { from, name, text, media } = req.body; // media: optional uploaded filename to simulate an inbound photo
   if (!from || !text) return res.status(400).json({ error: 'from and text required' });
+  let mediaPath = null;
+  if (media) {
+    const full = mediaFilePath(String(media));
+    if (!full || !fs.existsSync(full)) return res.status(400).json({ error: 'media file not found — upload it first' });
+    mediaPath = path.basename(full);
+  }
   try {
-    const r = await handleIncoming({ waId: String(from), name: name || 'Test Citizen', text, waMessageId: 'test-' + Date.now(), ts: Date.now() });
+    const r = await handleIncoming({ waId: String(from), name: name || 'Test Citizen', text, waMessageId: 'test-' + Date.now(), ts: Date.now(), mediaType: mediaPath ? 'image' : null, mediaPath });
     res.json({ ok: true, ticket_id: r.ticket.id, is_new: r.isNew, draft_source: r.ticket.draft_source });
   } catch (e) {
     console.error('simulate error:', e.message);
