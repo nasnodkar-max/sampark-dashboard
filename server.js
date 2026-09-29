@@ -851,6 +851,7 @@ app.get('/api/stats', (_req, res) => {
   const fresh = db.prepare("SELECT COUNT(*) c FROM tickets WHERE status='new'").get().c;
   const resolved = db.prepare("SELECT COUNT(*) c FROM tickets WHERE status='resolved'").get().c;
   const drafts = db.prepare('SELECT COUNT(*) c FROM tickets WHERE pending_draft IS NOT NULL').get().c;
+  const citizens = db.prepare('SELECT COUNT(*) c FROM citizens').get().c;
   // avg first response: ticket created -> first outbound message
   const pairs = db.prepare(`
     SELECT t.created_at tc, MIN(m.created_at) mr FROM tickets t
@@ -862,7 +863,7 @@ app.get('/api/stats', (_req, res) => {
   const week = Date.now() - 7 * 864e5;
   const mix = db.prepare('SELECT category, COUNT(*) c FROM tickets WHERE created_at>? GROUP BY category ORDER BY c DESC').all(week);
   const autoSent24h = db.prepare("SELECT COUNT(*) c FROM messages WHERE direction='out' AND auto=1 AND created_at>?").get(Date.now() - 864e5).c;
-  res.json({ total, active, new: fresh, resolved, pending_drafts: drafts, avg_first_response_sec: avgResp, issue_mix_7d: mix, auto_sent_24h: autoSent24h });
+  res.json({ total, active, new: fresh, resolved, pending_drafts: drafts, citizens, avg_first_response_sec: avgResp, issue_mix_7d: mix, auto_sent_24h: autoSent24h });
 });
 
 app.get('/api/brief', async (_req, res) => {

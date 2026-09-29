@@ -246,8 +246,8 @@ async function refreshHeader(){
     $('cntTickets').textContent = all.filter(t=>t.status!=='resolved').length || '';
     $('cntEvents').textContent = all.filter(t=>t.kind==='event' && t.status!=='resolved').length || '';
     $('cntApprovals').textContent = all.filter(t=>t.pending_draft).length || '';
-    const cits = await api('/api/citizens');
-    $('cntCitizens').textContent = cits.length || '';
+    const cits = await api('/api/stats');
+    $('cntCitizens').textContent = cits.citizens || '';
   } catch(e){}
 }
 async function toggleAuto(){
