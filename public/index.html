@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sampark — Constituency Brain</title>
+<title>Sampark — Constituency AI Assistant</title>
 <style>
   :root { --indigo:#232a5c; --amber:#f59e0b; --bg:#f4f5fa; --card:#fff; --green:#16a34a; --red:#dc2626; --muted:#6b7280; }
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -16,6 +16,10 @@
   header .badge.ok { background:var(--green); } header .badge.warn { background:var(--amber); color:#1f2937; }
   header button.badge { border:none; cursor:pointer; color:#fff; font:inherit; margin-left:0; }
   header button.badge.on { background:var(--green); } header button.badge.off { background:#6b7280; }
+  nav.tabs { background:#fff; border-bottom:1px solid #e5e7eb; padding:0 24px; display:flex; gap:4px; overflow-x:auto; position:sticky; top:60px; z-index:9; }
+  nav.tabs button { border:none; background:none; padding:14px 16px; font-size:14px; font-weight:600; color:var(--muted); cursor:pointer; border-bottom:3px solid transparent; white-space:nowrap; }
+  nav.tabs button.active { color:var(--indigo); border-bottom-color:var(--amber); }
+  nav.tabs button .cnt { background:#eef2ff; color:var(--indigo); border-radius:10px; padding:1px 8px; font-size:11px; margin-left:6px; }
   .wrap { max-width:1200px; margin:0 auto; padding:20px 24px 60px; }
   .banner { background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; padding:12px 16px; margin-bottom:16px; font-size:14px; }
   .card { background:var(--card); border-radius:12px; padding:18px 20px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
@@ -34,19 +38,37 @@
   .trow .id { font-weight:700; font-size:13px; color:var(--indigo); min-width:74px;}
   .trow .who { min-width:150px; } .trow .who b { display:block; font-size:14px;} .trow .who span{font-size:12px;color:var(--muted);}
   .trow .msg { flex:1; font-size:13px; color:#374151; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .trow .addr { font-size:12px; color:var(--muted); min-width:170px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .pill { font-size:11px; padding:3px 10px; border-radius:12px; font-weight:700; white-space:nowrap;}
   .p-new{background:#fef3c7;color:#92400e;} .p-in_progress{background:#dbeafe;color:#1e40af;}
   .p-awaiting_citizen{background:#e0e7ff;color:#3730a3;} .p-resolved{background:#dcfce7;color:#166534;}
   .pr-High{background:#fee2e2;color:#991b1b;} .pr-Medium{background:#f3f4f6;color:#4b5563;}
+  .k-issue{background:#eef2ff;color:#3730a3;} .k-event{background:#fdf2f8;color:#9d174d;}
+  .tr-rising{background:#fee2e2;color:#991b1b;} .tr-falling{background:#dcfce7;color:#166534;} .tr-stable{background:#f3f4f6;color:#4b5563;}
   .draft { border:1px solid #e5e7f0; border-left:4px solid var(--amber); border-radius:10px; padding:14px 16px; margin-bottom:12px; background:#fffdf7;}
   .draft .meta { font-size:12px; color:var(--muted); margin-bottom:8px;}
   .draft .txt { font-size:14px; background:#fff; border:1px solid #eee; border-radius:8px; padding:10px 12px; margin-bottom:10px;}
   .btn { border:none; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:700; cursor:pointer; }
   .btn.primary { background:var(--green); color:#fff; } .btn.ghost { background:#eef2ff; color:var(--indigo); }
   .btn.warn { background:#fef3c7; color:#92400e; } .btn + .btn { margin-left:8px; }
+  .insight { border:1px solid #e5e7f0; border-radius:10px; padding:14px 16px; margin-bottom:10px; display:flex; gap:14px; align-items:flex-start;}
+  .insight .rank { font-size:22px; font-weight:800; color:var(--indigo); min-width:36px; }
+  .insight .body { flex:1; } .insight .body b { font-size:15px; }
+  .insight .sum { font-size:13px; color:#374151; margin:4px 0; }
+  .insight .act { font-size:13px; background:#f0fdf4; border-left:3px solid var(--green); padding:8px 10px; border-radius:0 8px 8px 0; margin-top:6px;}
+  .ev { border:1px solid #e5e7f0; border-radius:10px; padding:14px 16px; margin-bottom:10px; display:flex; gap:12px; align-items:center;}
+  .ev .when { min-width:120px; } .ev .when b { display:block; font-size:14px; color:#9d174d;} .ev .when span{font-size:12px;color:var(--muted);}
+  .ev .what { flex:1; font-size:14px; } .ev .what span{display:block;font-size:12px;color:var(--muted);margin-top:2px;}
+  .askbox { display:flex; flex-direction:column; gap:8px; }
+  .amsg { max-width:85%; padding:10px 14px; border-radius:12px; font-size:14px; line-height:1.5; white-space:pre-wrap;}
+  .amsg.user { background:#eef2ff; align-self:flex-end; border-bottom-right-radius:2px;}
+  .amsg.ai { background:#fff; border:1px solid #e5e7eb; align-self:flex-start; border-bottom-left-radius:2px;}
+  .askrow { display:flex; gap:8px; margin-top:8px;}
+  .askrow input { flex:1; border:1px solid #d1d5db; border-radius:8px; padding:10px 14px; font-size:14px;}
+  .search { width:100%; border:1px solid #d1d5db; border-radius:8px; padding:10px 14px; font-size:14px; margin-bottom:12px;}
   .drawer { position:fixed; top:0; right:0; width:min(460px,100%); height:100%; background:#fff; box-shadow:-4px 0 20px rgba(0,0,0,.15); z-index:50; display:none; flex-direction:column;}
   .drawer.open { display:flex; }
-  .drawer header2, .dhead { padding:16px 20px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center;}
+  .dhead { padding:16px 20px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center;}
   .dhead b { font-size:16px; color:var(--indigo);} .dhead button{background:none;border:none;font-size:20px;cursor:pointer;}
   .thread { flex:1; overflow-y:auto; padding:16px 20px; background:#f8fafc; display:flex; flex-direction:column; gap:8px;}
   .bub { max-width:85%; padding:9px 13px; border-radius:12px; font-size:14px; line-height:1.45;}
@@ -57,7 +79,7 @@
   .dfoot textarea { width:100%; border:1px solid #d1d5db; border-radius:8px; padding:10px; font-size:14px; min-height:70px; font-family:inherit;}
   .dfoot .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;}
   .mixbar { display:flex; align-items:center; gap:10px; margin:8px 0; font-size:13px;}
-  .mixbar .n { width:110px; text-transform:capitalize;}
+  .mixbar .n { width:130px; text-transform:capitalize;}
   .mixbar .bar { height:10px; background:var(--indigo); border-radius:5px; min-width:4px;}
   .mixbar .c { color:var(--muted); }
   details.sim { margin-top:8px; } details.sim summary { cursor:pointer; font-size:13px; color:var(--indigo); font-weight:700;}
@@ -65,43 +87,96 @@
   .simbox input { flex:1; min-width:180px; border:1px solid #d1d5db; border-radius:8px; padding:9px 12px; font-size:14px;}
   .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#111827; color:#fff; padding:12px 22px; border-radius:10px; font-size:14px; z-index:100; display:none;}
   .empty { color:var(--muted); font-size:14px; padding:18px 4px; }
-  @media (max-width:760px){ .kpis{grid-template-columns:repeat(2,1fr);} .trow .msg{display:none;} }
+  .tabpage { display:none; } .tabpage.active { display:block; }
+  @media (max-width:760px){ .kpis{grid-template-columns:repeat(2,1fr);} .trow .msg{display:none;} .trow .addr{display:none;} }
 </style>
 </head>
 <body>
 <header>
-  <div><div class="logo">SAMPARK <span>·</span></div><div class="sub" id="repsub">Constituency Brain</div></div>
+  <div><div class="logo">SAMPARK <span>·</span></div><div class="sub" id="repsub">Constituency AI Assistant</div></div>
   <div class="badge warn" id="conn">checking…</div>
   <button class="badge off" id="autoToggle" onclick="toggleAuto()" title="Automatic office replies for routine messages">🤖 auto-reply…</button>
   <a href="/logout" style="color:#fff;opacity:.65;font-size:12px;text-decoration:none">Logout</a>
 </header>
+<nav class="tabs" id="tabs">
+  <button data-tab="overview" class="active" onclick="showTab('overview')">📊 Overview</button>
+  <button data-tab="tickets" onclick="showTab('tickets')">📥 Tickets<span class="cnt" id="cntTickets"></span></button>
+  <button data-tab="issues" onclick="showTab('issues')">🛠️ Issues</button>
+  <button data-tab="events" onclick="showTab('events')">🎉 Events<span class="cnt" id="cntEvents"></span></button>
+  <button data-tab="citizens" onclick="showTab('citizens')">👥 Citizens<span class="cnt" id="cntCitizens"></span></button>
+  <button data-tab="insights" onclick="showTab('insights')">💡 Insights</button>
+  <button data-tab="ask" onclick="showTab('ask')">🤖 Ask Sampark</button>
+  <button data-tab="approvals" onclick="showTab('approvals')">✍️ Approvals<span class="cnt" id="cntApprovals"></span></button>
+</nav>
 <div class="wrap">
-  <div class="banner" id="cfgBanner" style="display:none">⚠️ WhatsApp API not connected — the dashboard works, but sending is disabled. Set <b>WHATSAPP_TOKEN</b> and <b>WHATSAPP_PHONE_NUMBER_ID</b> in <b>.env</b> (see README), then restart.</div>
+  <div class="banner" id="cfgBanner" style="display:none">⚠️ WhatsApp API not connected — the dashboard works, but sending is disabled. Set <b>WHATSAPP_TOKEN</b> and <b>WHATSAPP_PHONE_NUMBER_ID</b> in the host env vars, then restart.</div>
 
-  <div class="card"><h2>📋 2-Minute Daily Brief</h2><ul class="brief" id="brief"><li>Loading…</li></ul></div>
-
-  <div class="kpis" id="kpis"></div>
-
-  <div class="card"><h2>✍️ Approvals — sensitive drafts, you decide <span class="tag">human approval required</span></h2><div id="approvals"></div></div>
-
-  <div class="card"><h2>🤖 Auto-sent by the office <span class="tag" style="background:#dcfce7;color:#166534">routine replies, no approval needed</span></h2><div id="autosent"></div></div>
-
-  <div class="card"><h2>📥 Ticket Inbox</h2>
-    <div class="chips" id="chips"></div>
-    <div id="inbox"></div>
+  <div class="tabpage active" id="page-overview">
+    <div class="card"><h2>📋 2-Minute Daily Brief</h2><ul class="brief" id="brief"><li>Loading…</li></ul></div>
+    <div class="kpis" id="kpis"></div>
+    <div class="card"><h2>📊 Issue mix — last 7 days</h2><div id="mix"></div></div>
+    <div class="card"><h2>🤖 Auto-sent by the office <span class="tag" style="background:#dcfce7;color:#166534">routine replies, no approval needed</span></h2><div id="autosent"></div></div>
   </div>
 
-  <div class="card"><h2>📊 Issue mix — last 7 days</h2><div id="mix"></div></div>
-
-  <div class="card"><details class="sim"><summary>🧪 Local test simulator (no WhatsApp needed)</summary>
-    <div class="simbox">
-      <input id="simFrom" placeholder="Sender phone, e.g. 919876543210">
-      <input id="simName" placeholder="Name, e.g. Priya Nair">
-      <input id="simText" placeholder="Message text…" style="flex:2">
-      <button class="btn ghost" onclick="simulate()">Inject message</button>
+  <div class="tabpage" id="page-tickets">
+    <div class="card"><h2>📥 Ticket Inbox</h2>
+      <div class="chips" id="kindChips"></div>
+      <div class="chips" id="chips"></div>
+      <div id="inbox"></div>
     </div>
-    <div style="font-size:12px;color:var(--muted);margin-top:8px">Simulates an incoming WhatsApp message through the exact same path as the Meta webhook.</div>
-  </details></div>
+    <div class="card"><details class="sim"><summary>🧪 Local test simulator (no WhatsApp needed)</summary>
+      <div class="simbox">
+        <input id="simFrom" placeholder="Sender phone, e.g. 919876543210">
+        <input id="simName" placeholder="Name, e.g. Priya Nair">
+        <input id="simText" placeholder="Message text…" style="flex:2">
+        <button class="btn ghost" onclick="simulate()">Inject message</button>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px">Simulates an incoming WhatsApp message through the exact same path as the Meta webhook.</div>
+    </details></div>
+  </div>
+
+  <div class="tabpage" id="page-issues">
+    <div class="card"><h2>🛠️ Issues <span class="tag">civic complaints needing action</span></h2>
+      <div class="chips" id="issueChips"></div><div id="issueInbox"></div>
+    </div>
+  </div>
+
+  <div class="tabpage" id="page-events">
+    <div class="card"><h2>🎉 Events &amp; Invitations <span class="tag" style="background:#fdf2f8;color:#9d174d">life moments citizens shared</span></h2>
+      <div id="eventList"></div>
+    </div>
+  </div>
+
+  <div class="tabpage" id="page-citizens">
+    <div class="card"><h2>👥 Citizen Registry <span class="tag">everyone who ever messaged</span>
+      <span style="float:right"><button class="btn ghost" onclick="seedDemo()">⬇ Load 1,000 demo chats</button></span></h2>
+      <input class="search" id="citSearch" placeholder="Search by name, phone or address…" oninput="loadCitizens()">
+      <div id="citList"></div>
+    </div>
+  </div>
+
+  <div class="tabpage" id="page-insights">
+    <div class="card"><h2>💡 Constituency Insights <span class="tag">top 10 topics · refreshed daily by AI</span>
+      <span style="float:right"><button class="btn ghost" onclick="refreshInsights(true)">↻ Refresh now</button></span></h2>
+      <div id="insMeta" style="font-size:12px;color:var(--muted);margin-bottom:12px"></div>
+      <div id="insList"></div>
+    </div>
+  </div>
+
+  <div class="tabpage" id="page-ask">
+    <div class="card"><h2>🤖 Ask Sampark <span class="tag">your AI constituency assistant</span></h2>
+      <div class="askbox" id="askThread" style="max-height:420px;overflow-y:auto;margin-bottom:8px"></div>
+      <div class="askrow">
+        <input id="askInput" placeholder="Ask about issues, citizens, events… e.g. “What are the top water complaints in Fatorda?”" onkeydown="if(event.key==='Enter')askSend()">
+        <button class="btn primary" onclick="askSend()">Ask</button>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px">Sampark AI answers from live constituency data — ticket counts, areas, citizens and today's insights. It never invents numbers.</div>
+    </div>
+  </div>
+
+  <div class="tabpage" id="page-approvals">
+    <div class="card"><h2>✍️ Approvals — sensitive drafts, you decide <span class="tag">human approval required</span></h2><div id="approvals"></div></div>
+  </div>
 </div>
 
 <div class="drawer" id="drawer">
@@ -122,21 +197,39 @@
 </div>
 <div class="toast" id="toast"></div>
 <script>
-let cur = null, filter = '', autoOn = true;
+let cur = null, filter = '', kindFilter = '', issueFilter = '', autoOn = true, activeTab = 'overview', askLoaded = false;
 const $ = id => document.getElementById(id);
 const esc = s => String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function toast(m){ const t=$('toast'); t.textContent=m; t.style.display='block'; setTimeout(()=>t.style.display='none',2600); }
 const statusLabel = s => ({new:'New',in_progress:'In progress',awaiting_citizen:'Awaiting citizen',resolved:'Resolved'}[s]||s);
+const kindPill = k => k==='event' ? '<span class="pill k-event">🎉 event</span>' : '<span class="pill k-issue">🛠️ issue</span>';
 
 async function api(p, opt){ const r = await fetch(p, opt); if(r.status===401){ location.href='/login'; throw new Error('login required'); } const j = await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.error||('HTTP '+r.status)); return j; }
 
-async function refresh(){
+function showTab(name){
+  activeTab = name;
+  document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===name));
+  document.querySelectorAll('.tabpage').forEach(p=>p.classList.toggle('active', p.id==='page-'+name));
+  refreshTab();
+}
+function refreshTab(){
+  if(activeTab==='overview') loadOverview();
+  else if(activeTab==='tickets') loadInbox();
+  else if(activeTab==='issues') loadIssues();
+  else if(activeTab==='events') loadEvents();
+  else if(activeTab==='citizens') loadCitizens();
+  else if(activeTab==='insights') loadInsights(false);
+  else if(activeTab==='ask') loadAsk();
+  else if(activeTab==='approvals') loadApprovals();
+}
+
+async function refreshHeader(){
   try {
     const h = await api('/api/health');
     const b = $('conn');
     b.textContent = h.configured ? '● WhatsApp connected' : '● WhatsApp not connected';
     b.className = 'badge ' + (h.configured ? 'ok' : 'warn');
-    $('repsub').textContent = 'Constituency Brain · ' + h.rep;
+    $('repsub').textContent = 'Constituency AI Assistant · ' + h.rep;
     $('cfgBanner').style.display = h.configured ? 'none' : 'block';
     autoOn = h.auto_reply !== false;
     const at = $('autoToggle');
@@ -144,19 +237,37 @@ async function refresh(){
     at.className = 'badge ' + (autoOn ? 'on' : 'off');
   } catch(e){}
   try {
+    const all = await api('/api/tickets');
+    $('cntTickets').textContent = all.filter(t=>t.status!=='resolved').length || '';
+    $('cntEvents').textContent = all.filter(t=>t.kind==='event' && t.status!=='resolved').length || '';
+    $('cntApprovals').textContent = all.filter(t=>t.pending_draft).length || '';
+    const cits = await api('/api/citizens');
+    $('cntCitizens').textContent = cits.length || '';
+  } catch(e){}
+}
+async function toggleAuto(){
+  try {
+    const r = await api('/api/settings/auto-reply', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:!autoOn})});
+    autoOn = r.auto_reply;
+    toast('Auto-reply ' + (autoOn ? 'enabled — routine messages go out as the office' : 'paused — all replies need approval'));
+  } catch(e){ toast('Could not change setting: '+e.message); }
+  refreshHeader();
+}
+
+async function loadOverview(){
+  try {
     const br = await api('/api/brief');
-    let html = '';
-    html += `<li>🆕 <b>${br.new_today}</b> new ticket${br.new_today==1?'':'s'} in the last 24 hours.</li>`;
-    if (br.spike) html += `<li>📈 Emerging cluster: <b>${esc(br.spike.category)}</b> complaints — ${br.spike.this_week} this week vs ${br.spike.prev_week} last week.</li>`;
-    html += `<li>✍️ <b>${br.pending_drafts.length}</b> sensitive draft${br.pending_drafts.length==1?'':'s'} awaiting your approval.</li>`;
-    html += `<li>⏳ <b>${br.awaiting_citizen}</b> ticket${br.awaiting_citizen==1?'':'s'} awaiting citizen reply.</li>`;
-    if (br.auto_sent_24h) html += `<li>🤖 <b>${br.auto_sent_24h}</b> routine ${br.auto_sent_24h==1?'reply was':'replies were'} auto-sent by the office in the last 24 hours.</li>`;
     if (br.ai_brief) {
       $('brief').innerHTML = br.ai_brief.split('\n').map((l) => l.replace(/^[-•*]\s*/, '').trim()).filter(Boolean)
         .map((l) => `<li>${esc(l)}</li>`).join('')
         + '<li style="list-style:none;color:var(--muted);font-size:12px;margin-top:8px">— written by AI, refreshes every 15 min</li>';
     } else {
-      $('brief').innerHTML = html;
+      $('brief').innerHTML =
+        `<li>🆕 <b>${br.new_today}</b> new tickets in the last 24 hours.</li>` +
+        (br.spike ? `<li>📈 Emerging cluster: <b>${esc(br.spike.category)}</b> — ${br.spike.this_week} this week vs ${br.spike.prev_week} last week.</li>` : '') +
+        `<li>✍️ <b>${br.pending_drafts.length}</b> sensitive drafts awaiting approval.</li>` +
+        `<li>⏳ <b>${br.awaiting_citizen}</b> tickets awaiting citizen reply.</li>` +
+        (br.auto_sent_24h ? `<li>🤖 <b>${br.auto_sent_24h}</b> routine replies auto-sent in the last 24 hours.</li>` : '');
     }
   } catch(e){ $('brief').innerHTML = '<li>Could not load brief.</li>'; }
   try {
@@ -171,68 +282,136 @@ async function refresh(){
       return `<div class="mixbar"><div class="n">${esc(m.category)}</div><div class="bar" style="width:${Math.max(4, m.c/max*220)}px"></div><div class="c">${m.c}</div></div>`;
     }).join('') : '<div class="empty">No tickets in the last 7 days.</div>';
   } catch(e){}
-  await loadInbox(); await loadApprovals(); await loadAutoSent();
-}
-
-async function toggleAuto(){
   try {
-    const r = await api('/api/settings/auto-reply', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:!autoOn})});
-    autoOn = r.auto_reply;
-    toast('Auto-reply ' + (autoOn ? 'enabled — routine messages go out as the office' : 'paused — all replies need approval'));
-  } catch(e){ toast('Could not change setting: '+e.message); }
-  refresh();
+    const list = await api('/api/auto-sent');
+    $('autosent').innerHTML = list.length ? list.map(m=>`
+      <div class="trow" onclick="openTicket('${m.ticket_id}')">
+        <div class="id">${esc(m.ticket_id)}</div>
+        <div class="who"><b>${esc(m.citizen_name||'Citizen')}</b><span>${esc(m.category)}</span></div>
+        <div class="msg">🤖 ${esc(m.body)}</div>
+        <span class="pill p-in_progress">${new Date(m.created_at).toLocaleString()}</span>
+      </div>`).join('') : '<div class="empty">No auto-sent replies yet.</div>';
+  } catch(e){}
 }
 
-async function loadAutoSent(){
-  let list = [];
-  try { list = await api('/api/auto-sent'); } catch(e){}
-  $('autosent').innerHTML = list.length ? list.map(m=>`
-    <div class="trow" onclick="openTicket('${m.ticket_id}')">
-      <div class="id">${esc(m.ticket_id)}</div>
-      <div class="who"><b>${esc(m.citizen_name||'Citizen')}</b><span>${esc(m.category)}</span></div>
-      <div class="msg">🤖 ${esc(m.body)}</div>
-      <span class="pill p-in_progress">${new Date(m.created_at).toLocaleString()}</span>
-    </div>`).join('') : '<div class="empty">No auto-sent replies yet. Routine messages (name requests, water/road/sanitation replies) go out automatically.</div>';
+function ticketRow(t, showAddr){
+  return `<div class="trow" onclick="openTicket('${t.id}')">
+    <div class="id">${esc(t.id)}</div>
+    <div class="who"><b>${esc(t.citizen_name||'Citizen')}</b><span>${esc(t.category)}${t.sensitive ? ' · <b style="color:var(--red)">sensitive</b>' : ''}${t.awaiting_name ? ' · <b style="color:var(--amber)">awaiting name</b>' : ''}</span></div>
+    ${showAddr && t.issue_address ? `<div class="addr">📍 ${esc(t.issue_address)}</div>` : ''}
+    <div class="msg">${esc(t.last_message)}</div>
+    ${kindPill(t.kind)}
+    <span class="pill pr-${t.priority}">${t.priority}</span>
+    <span class="pill p-${t.status}">${statusLabel(t.status)}</span>
+  </div>`;
 }
-</script>
-</body>
-</html>
-<script>
 async function loadInbox(){
-  const list = await api('/api/tickets' + (filter ? '?status='+filter : ''));
-  $('inbox').innerHTML = list.length ? list.map(t=>`
-    <div class="trow" onclick="openTicket('${t.id}')">
-      <div class="id">${esc(t.id)}</div>
-      <div class="who"><b>${esc(t.citizen_name||'Citizen')}</b><span>${esc(t.category)}${t.sensitive ? ' · <b style="color:var(--red)">sensitive</b>' : ''}${t.awaiting_name ? ' · <b style="color:var(--amber)">awaiting name</b>' : ''}</span></div>
-      <div class="msg">${esc(t.last_message)}</div>
-      <span class="pill pr-${t.priority}">${t.priority}</span>
-      <span class="pill p-${t.status}">${statusLabel(t.status)}</span>
-    </div>`).join('') : '<div class="empty">No tickets here yet.</div>';
-  const chips = [['','All'],['new','New'],['in_progress','In progress'],['awaiting_citizen','Awaiting citizen'],['resolved','Resolved']];
-  $('chips').innerHTML = chips.map(([v,l])=>`<button class="chip ${filter===v?'active':''}" onclick="setFilter('${v}')">${l}</button>`).join('');
+  const q = [filter && 'status='+filter, kindFilter && 'kind='+kindFilter].filter(Boolean).join('&');
+  const list = await api('/api/tickets' + (q ? '?'+q : ''));
+  $('inbox').innerHTML = list.length ? list.map(t=>ticketRow(t, true)).join('') : '<div class="empty">No tickets here yet.</div>';
+  $('chips').innerHTML = [['','All'],['new','New'],['in_progress','In progress'],['awaiting_citizen','Awaiting citizen'],['resolved','Resolved']]
+    .map(([v,l])=>`<button class="chip ${filter===v?'active':''}" onclick="filter='${v}';loadInbox()">${l}</button>`).join('');
+  $('kindChips').innerHTML = [['','All'],['issue','🛠️ Issues'],['event','🎉 Events']]
+    .map(([v,l])=>`<button class="chip ${kindFilter===v?'active':''}" onclick="kindFilter='${v}';loadInbox()">${l}</button>`).join('');
 }
-function setFilter(v){ filter=v; loadInbox(); }
-
+async function loadIssues(){
+  const q = 'kind=issue' + (issueFilter ? '&status='+issueFilter : '');
+  const list = await api('/api/tickets?'+q);
+  $('issueInbox').innerHTML = list.length ? list.map(t=>ticketRow(t, true)).join('') : '<div class="empty">No issues here yet.</div>';
+  $('issueChips').innerHTML = [['','All'],['new','New'],['in_progress','In progress'],['awaiting_citizen','Awaiting citizen'],['resolved','Resolved']]
+    .map(([v,l])=>`<button class="chip ${issueFilter===v?'active':''}" onclick="issueFilter='${v}';loadIssues()">${l}</button>`).join('');
+}
+async function loadEvents(){
+  const list = await api('/api/events');
+  $('eventList').innerHTML = list.length ? list.map(t=>`
+    <div class="ev" onclick="openTicket('${t.id}')" style="cursor:pointer">
+      <div class="when"><b>${esc(t.event_datetime||'Date TBA')}</b><span>${esc(t.venue||'')}</span></div>
+      <div class="what"><b>${esc(t.citizen_name||'Citizen')}</b> — ${esc(t.last_message)}<span>${esc(t.id)} · ${statusLabel(t.status)}${t.sensitive?' · sensitive':''}</span></div>
+      <span class="pill p-${t.status}">${statusLabel(t.status)}</span>
+    </div>`).join('') : '<div class="empty">No invitations yet. When a citizen shares a birthday, wedding or inauguration, it lands here.</div>';
+}
+async function seedDemo(){
+  if(!confirm('Load 1,000 demo citizen chats (Margao sample data)? This appends to the current database.')) return;
+  toast('Seeding 1,000 demo chats…');
+  try {
+    const r = await api('/api/admin/seed', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+    toast(`Demo data loaded: ${r.citizens} citizens, ${r.tickets} tickets`);
+  } catch(e){ toast('Seed failed: '+e.message); }
+  refreshHeader(); refreshTab();
+}
+async function loadCitizens(){
+  const q = $('citSearch').value.trim();
+  const list = await api('/api/citizens' + (q ? '?q='+encodeURIComponent(q) : ''));
+  $('citList').innerHTML = list.length ? list.slice(0,100).map(c=>`
+    <div class="trow" style="cursor:default">
+      <div class="who" style="min-width:170px"><b>${esc(c.name||'—')}</b><span>${esc(c.wa_id||'')}</span></div>
+      <div class="addr" style="flex:1">📍 ${esc(c.address||'—')}</div>
+      <div class="msg">${c.tickets} chat${c.tickets==1?'':'s'} · ${c.open_tickets} open</div>
+      <span class="pill ${c.onboarding_step==='done'?'p-resolved':'p-new'}">${c.onboarding_step==='done'?'registered':c.onboarding_step}</span>
+    </div>`).join('') : '<div class="empty">No citizens found.</div>';
+}
+async function loadInsights(force){
+  if(force) toast('Refreshing insights — AI is analyzing the last 30 days…');
+  try {
+    const r = force ? await api('/api/admin/refresh-insights', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}) : null;
+    const d = await api('/api/insights');
+    $('insMeta').textContent = d.day ? `For ${d.day}${d.refreshing ? ' · updating in the background…' : ' · refreshed daily at 6 AM'}` : 'No data yet — message data will appear here.';
+    $('insList').innerHTML = d.insights.length ? d.insights.map(i=>`
+      <div class="insight">
+        <div class="rank">${i.rank}</div>
+        <div class="body">
+          <b>${esc(i.topic)}</b> <span class="pill tr-${i.trend}">${i.trend}</span> <span class="pill p-new">${i.ticket_count} tickets</span>
+          <div class="sum">${esc(i.summary)}</div>
+          <div class="act">👉 ${esc(i.suggested_action)}</div>
+        </div>
+      </div>`).join('') : '<div class="empty">Not enough ticket data yet.</div>';
+    if(force) toast('Insights refreshed');
+  } catch(e){ toast('Insights refresh failed: '+e.message); }
+}
+function refreshInsights(force){ loadInsights(force); }
+async function loadAsk(){
+  if(askLoaded) return; askLoaded = true;
+  const h = await api('/api/ask/history');
+  $('askThread').innerHTML = h.length ? h.map(m=>`<div class="amsg ${m.role==='user'?'user':'ai'}">${esc(m.content)}</div>`).join('')
+    : '<div class="empty">Ask me anything about your constituency — top issues, specific citizens, upcoming events, trends.</div>';
+  $('askThread').scrollTop = $('askThread').scrollHeight;
+}
+async function askSend(){
+  const inp = $('askInput'), q = inp.value.trim();
+  if(!q) return;
+  inp.value = '';
+  $('askThread').innerHTML += `<div class="amsg user">${esc(q)}</div><div class="amsg ai" id="askTyping">Thinking…</div>`;
+  $('askThread').scrollTop = $('askThread').scrollHeight;
+  try {
+    const r = await api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q})});
+    $('askTyping').outerHTML = `<div class="amsg ai">${esc(r.answer)}</div>`;
+  } catch(e){
+    $('askTyping').outerHTML = `<div class="amsg ai">Sorry — I couldn't answer that just now. (${esc(e.message)})</div>`;
+  }
+  $('askThread').scrollTop = $('askThread').scrollHeight;
+}
 async function loadApprovals(){
   const list = (await api('/api/tickets')).filter(t=>t.pending_draft);
   $('approvals').innerHTML = list.length ? list.map(t=>`
     <div class="draft">
-      <div class="meta">${esc(t.id)} · ${esc(t.citizen_name||'Citizen')} · ${esc(t.category)} · ${new Date(t.updated_at).toLocaleString()}${t.draft_source==='ai' ? ' <span class="tag">AI draft</span>' : ' <span class="tag" style="background:#f3f4f6;color:#4b5563">template</span>'}</div>
+      <div class="meta">${esc(t.id)} · ${esc(t.citizen_name||'Citizen')} · ${esc(t.category)} · ${new Date(t.updated_at).toLocaleString()}${t.draft_source==='ai' ? ' <span class="tag">AI draft</span>' : ' <span class="tag" style="background:#f3f4f6;color:#4b5563">template</span>'}${t.sensitive?' <span class="tag" style="background:#fee2e2;color:#991b1b">sensitive</span>':''}</div>
       <div class="txt">${esc(t.pending_draft)}</div>
       <button class="btn primary" onclick="quickApprove('${t.id}')">Approve &amp; send</button>
       <button class="btn ghost" onclick="openTicket('${t.id}')">Review / edit</button>
     </div>`).join('') : '<div class="empty">Nothing awaiting approval. Sensitive topics land here; routine replies go out automatically as the office.</div>';
 }
 async function quickApprove(id){
-  const t = await api('/api/tickets/'+id);
   try { await api('/api/tickets/'+id+'/approve', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})}); toast('Reply sent to citizen'); }
   catch(e){ toast('Send failed: '+e.message); }
-  refresh();
+  refreshHeader(); refreshTab();
 }
 async function openTicket(id){
   cur = await api('/api/tickets/'+id);
   $('dTitle').textContent = cur.id + ' · ' + (cur.citizen_name||'Citizen') + ' · ' + statusLabel(cur.status);
-  $('dThread').innerHTML = cur.messages.map(m=>`<div class="bub ${m.direction}">${esc(m.body)}<span class="t">${new Date(m.created_at).toLocaleString()}</span></div>`).join('');
+  let extra = '';
+  if(cur.kind==='event') extra += `<div style="font-size:13px;margin-bottom:8px">🎉 <b>${esc(cur.event_datetime||'Date TBA')}</b>${cur.venue?' · '+esc(cur.venue):''}</div>`;
+  else if(cur.issue_address) extra += `<div style="font-size:13px;margin-bottom:8px">📍 ${esc(cur.issue_address)}</div>`;
+  $('dThread').innerHTML = extra + cur.messages.map(m=>`<div class="bub ${m.direction}">${esc(m.body)}<span class="t">${new Date(m.created_at).toLocaleString()}</span></div>`).join('');
   $('dDraft').value = cur.pending_draft || '';
   $('dCustom').value = '';
   $('drawer').classList.add('open');
@@ -243,31 +422,33 @@ async function approveCurrent(){
   if(!cur) return;
   try { await api('/api/tickets/'+cur.id+'/approve', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:$('dDraft').value})}); toast('Reply sent to citizen'); closeDrawer(); }
   catch(e){ toast('Send failed: '+e.message); }
-  refresh();
+  refreshHeader(); refreshTab();
 }
 async function saveDraft(){
   if(!cur) return;
   await api('/api/tickets/'+cur.id+'/draft', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:$('dDraft').value})});
-  toast('Draft saved'); refresh();
+  toast('Draft saved'); refreshHeader(); refreshTab();
 }
 async function sendCustom(){
   if(!cur) return; const v = $('dCustom').value.trim(); if(!v) return;
   try { await api('/api/tickets/'+cur.id+'/reply', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:v})}); toast('Reply sent'); }
   catch(e){ toast('Send failed: '+e.message); }
-  openTicket(cur.id); refresh();
+  openTicket(cur.id); refreshHeader(); refreshTab();
 }
 async function setStatus(s){
   if(!cur) return;
   await api('/api/tickets/'+cur.id+'/status', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({status:s})});
-  toast('Marked: '+statusLabel(s)); openTicket(cur.id); refresh();
+  toast('Marked: '+statusLabel(s)); openTicket(cur.id); refreshHeader(); refreshTab();
 }
 async function simulate(){
   const from=$('simFrom').value.trim(), name=$('simName').value.trim(), text=$('simText').value.trim();
   if(!from||!text){ toast('Enter a phone number and message'); return; }
   const r = await api('/api/test/simulate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({from,name,text})});
   toast('Message injected → ticket '+r.ticket_id); $('simText').value='';
-  refresh();
+  refreshHeader(); refreshTab();
 }
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDrawer(); });
-refresh(); setInterval(refresh, 5000);
+refreshHeader(); refreshTab(); setInterval(()=>{ refreshHeader(); refreshTab(); }, 5000);
 </script>
+</body>
+</html>
