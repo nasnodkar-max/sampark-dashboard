@@ -123,6 +123,24 @@
   .chatgreet .mark svg{width:30px;height:30px}
   .chatgreet h1{font-size:27px;margin:0 0 8px;font-weight:650;letter-spacing:-.01em}
   .chatgreet .asksub{font-size:13px;color:var(--muted)}
+  .asktoolbar{max-width:780px;margin:0 auto;padding:2px 10px 0;display:flex;justify-content:flex-end;gap:8px}
+  .asktoolbar .btn{padding:7px 12px;font-size:13px}
+  .convpanel{position:fixed;top:0;left:0;bottom:0;width:320px;max-width:86vw;background:var(--card);border-right:1px solid var(--line);box-shadow:8px 0 30px rgba(60,40,20,.12);z-index:60;transform:translateX(-105%);transition:transform .22s ease;display:flex;flex-direction:column}
+  .convpanel.open{transform:translateX(0)}
+  .convpanel header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .convpanel header b{font-size:15px}
+  .convlist{overflow-y:auto;padding:8px}
+  .convitem{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:10px;cursor:pointer;border:1px solid transparent}
+  .convitem:hover{background:var(--paper)}
+  .convitem.active{background:var(--paper);border-color:var(--line)}
+  .convitem .ct{flex:1;min-width:0}
+  .convitem .ct .t{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .convitem .ct .d{font-size:11.5px;color:var(--muted)}
+  .convitem .del{border:none;background:none;color:var(--muted);font-size:16px;cursor:pointer;padding:4px 6px;border-radius:8px;line-height:1}
+  .convitem .del:hover{color:#b33;background:#fbe9e9}
+  .convempty{padding:24px;text-align:center;color:var(--muted);font-size:13px}
+  .convscrim{position:fixed;inset:0;background:rgba(40,25,10,.25);z-index:55;display:none}
+  .convscrim.open{display:block}
   .suggest{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:28px auto 0;max-width:660px;text-align:left}
   .suggest button{background:#fff;border:1px solid var(--line);border-radius:15px;padding:13px 15px;font-size:13.5px;line-height:1.45;color:var(--ink);cursor:pointer;text-align:left;font-family:inherit;box-shadow:var(--shadow);transition:border-color .15s}
   .suggest button:hover{border-color:var(--terra)}
@@ -194,6 +212,10 @@
   <div class="banner" id="cfgBanner" style="display:none">⚠️ WhatsApp API not connected — the dashboard works, but sending is disabled. Set <b>WHATSAPP_TOKEN</b> and <b>WHATSAPP_PHONE_NUMBER_ID</b> in the host env vars, then restart.</div>
 
   <div class="tabpage active" id="page-ask">
+    <div class="asktoolbar">
+      <button class="btn ghost" onclick="toggleConvPanel(true)">🕘 Past conversations</button>
+      <button class="btn" onclick="newAskConversation()">＋ New conversation</button>
+    </div>
     <div class="chatwrap">
       <div class="chatgreet" id="askGreet">
         <span class="mark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span>
@@ -212,6 +234,11 @@
         <button class="sendbtn" onclick="askSend()" title="Send">↑</button>
       </div>
       <div class="fineprint">Sampark AI answers from live constituency data — ticket counts, areas, citizens and today's insights. It never invents numbers.</div>
+    </div>
+    <div class="convscrim" id="convScrim" onclick="toggleConvPanel(false)"></div>
+    <div class="convpanel" id="convPanel">
+      <header><b>Past conversations</b><button class="btn ghost" onclick="toggleConvPanel(false)">✕</button></header>
+      <div class="convlist" id="convList"></div>
     </div>
   </div>
 
@@ -691,14 +718,60 @@ async function loadInsights(force){
   } catch(e){ toast('Insights refresh failed: '+e.message); }
 }
 function refreshInsights(force){ loadInsights(force); }
+let askConvId = null; // current conversation; null = brand-new (created on first send)
+function askRenderMsgs(h){
+  $('askThread').innerHTML = h.map(m=> m.role==='user' ? `<div class="amsg user">${esc(m.content)}</div>` : `<div class="amsg ai"><span class="aiava">${SPARK}</span><span class="aitxt">${esc(m.content)}</span></div>`).join('');
+  $('askThread').scrollTop = $('askThread').scrollHeight;
+}
 async function loadAsk(){
   if(askLoaded) return; askLoaded = true;
-  const h = await api('/api/ask/history');
-  if(h.length){
-    $('askGreet').style.display = 'none';
-    $('askThread').innerHTML = h.map(m=> m.role==='user' ? `<div class="amsg user">${esc(m.content)}</div>` : `<div class="amsg ai"><span class="aiava">${SPARK}</span><span class="aitxt">${esc(m.content)}</span></div>`).join('');
-  }
-  $('askThread').scrollTop = $('askThread').scrollHeight;
+  // Fresh conversation on every login — past ones live under "Past conversations".
+  newAskConversation();
+}
+function newAskConversation(){
+  askConvId = null;
+  $('askGreet').style.display = '';
+  $('askThread').innerHTML = '';
+  $('askInput').value = ''; $('askInput').style.height = 'auto';
+  toggleConvPanel(false);
+  renderConvListActive();
+}
+async function toggleConvPanel(open){
+  $('convPanel').classList.toggle('open', open);
+  $('convScrim').classList.toggle('open', open);
+  if(open) loadConversations();
+}
+function convDate(ts){ return new Date(ts).toLocaleDateString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'}); }
+async function loadConversations(){
+  try {
+    const list = await api('/api/ask/conversations');
+    $('convList').innerHTML = list.length ? list.map(c=>
+      `<div class="convitem ${c.id===askConvId?'active':''}" data-cid="${c.id}" onclick="openConversation(${c.id})">
+         <div class="ct"><div class="t">${esc(c.title||'Untitled')}</div><div class="d">${convDate(c.updated_at)} · ${c.messages} message${c.messages===1?'':'s'}</div></div>
+         <button class="del" title="Delete conversation" onclick="deleteConversation(event,${c.id})">🗑</button>
+       </div>`).join('')
+      : '<div class="convempty">No past conversations yet.<br>Ask something and it will be saved here.</div>';
+  } catch(e){ $('convList').innerHTML = '<div class="convempty">Could not load conversations.</div>'; }
+}
+function renderConvListActive(){
+  document.querySelectorAll('.convitem').forEach(el=> el.classList.toggle('active', Number(el.dataset.cid)===askConvId));
+}
+async function openConversation(id){
+  try {
+    const c = await api('/api/ask/conversations/'+id+'/messages');
+    askConvId = c.id;
+    if(c.messages.length){ $('askGreet').style.display = 'none'; askRenderMsgs(c.messages); }
+    else newAskConversation();
+    toggleConvPanel(false);
+  } catch(e){ toast('Could not open conversation'); }
+}
+async function deleteConversation(ev, id){
+  ev.stopPropagation();
+  if(!confirm('Delete this conversation? This cannot be undone.')) return;
+  try {
+    await api('/api/ask/conversations/'+id, {method:'DELETE'});
+    if(id===askConvId) newAskConversation(); else loadConversations();
+  } catch(e){ toast('Delete failed'); }
 }
 function askChip(btn){ $('askInput').value = btn.querySelector('span').textContent.trim(); askSend(); }
 async function askSend(){
@@ -709,8 +782,9 @@ async function askSend(){
   $('askThread').innerHTML += `<div class="amsg user">${esc(q)}</div><div class="amsg ai" id="askTyping"><span class="aiava">${SPARK}</span><span class="aitxt"><span class="thinking">Thinking…</span></span></div>`;
   $('askThread').scrollTop = $('askThread').scrollHeight;
   try {
-    const r = await api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q})});
+    const r = await api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q, conversation_id:askConvId})});
     $('askTyping').outerHTML = `<div class="amsg ai"><span class="aiava">${SPARK}</span><span class="aitxt">${esc(r.answer)}</span></div>`;
+    askConvId = r.conversation_id; // server creates one on the first send
   } catch(e){
     $('askTyping').outerHTML = `<div class="amsg ai"><span class="aiava">${SPARK}</span><span class="aitxt">Sorry — I couldn't answer that just now. (${esc(e.message)})</span></div>`;
   }

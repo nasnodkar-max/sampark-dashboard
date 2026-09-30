@@ -196,6 +196,24 @@ CREATE TABLE IF NOT EXISTS ai_chats (
   created_at INTEGER NOT NULL
 );
 `);
+try { db.exec('ALTER TABLE ai_chats ADD COLUMN conversation_id INTEGER'); } catch (e) { /* already there */ }
+db.exec(`
+CREATE TABLE IF NOT EXISTS ai_conversations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+`);
+// One-time: group pre-conversation chat history into a single archived conversation.
+try {
+  const orphans = db.prepare('SELECT COUNT(*) c FROM ai_chats WHERE conversation_id IS NULL').get().c;
+  if (orphans > 0) {
+    const now = Date.now();
+    const r = db.prepare('INSERT INTO ai_conversations (title, created_at, updated_at) VALUES (?,?,?)').run('Earlier conversations', now, now);
+    db.prepare('UPDATE ai_chats SET conversation_id=? WHERE conversation_id IS NULL').run(Number(r.lastInsertRowid));
+  }
+} catch (e) { console.error('ai_chats conversation migration failed:', e.message); }
 // 2027 election intel: potential candidates for the constituency, researched
 // daily by the AI. Manual=1 rows were added by the politician and are never
 // removed by the research runs.
@@ -1356,11 +1374,32 @@ async function runAssistantTool(name, input = {}) {
 }
 
 // Politician chats with the Sampark AI assistant about constituency insights.
+// Conversations persist across logins; the dashboard starts a fresh one on each login.
+function getConversation(id) {
+  const n = parseInt(id, 10);
+  if (!Number.isFinite(n)) return null;
+  return db.prepare('SELECT * FROM ai_conversations WHERE id=?').get(n) || null;
+}
+function createConversation(title) {
+  const now = Date.now();
+  const r = db.prepare('INSERT INTO ai_conversations (title, created_at, updated_at) VALUES (?,?,?)')
+    .run(String(title || 'New conversation').slice(0, 80), now, now);
+  return db.prepare('SELECT * FROM ai_conversations WHERE id=?').get(Number(r.lastInsertRowid));
+}
 app.post('/api/ask', express.json(), async (req, res) => {
   const question = String(req.body.question || '').trim().slice(0, 1000);
   if (!question) return res.status(400).json({ error: 'empty question' });
-  const history = db.prepare('SELECT role, content FROM ai_chats ORDER BY id DESC LIMIT 8').all().reverse();
-  db.prepare('INSERT INTO ai_chats (role, content, created_at) VALUES (?,?,?)').run('user', question, Date.now());
+  let conv = getConversation(req.body.conversation_id);
+  if (!conv) conv = createConversation(question.slice(0, 60));
+  const now = Date.now();
+  const history = db.prepare('SELECT role, content FROM ai_chats WHERE conversation_id=? ORDER BY id DESC LIMIT 8').all(conv.id).reverse();
+  db.prepare('INSERT INTO ai_chats (role, content, created_at, conversation_id) VALUES (?,?,?,?)').run('user', question, now, conv.id);
+  // Title from the first question if still untitled.
+  if (!conv.title || conv.title === 'New conversation') {
+    const t = question.slice(0, 60);
+    db.prepare('UPDATE ai_conversations SET title=? WHERE id=?').run(t, conv.id);
+    conv.title = t;
+  }
   let answer = null;
   // Tool-enabled assistant first: it can query every citizen, ticket, and message.
   try { answer = await ai.askAIWithTools({ repName: REP_NAME, question, context: buildAssistantContext(), history, toolDefs: ASSISTANT_TOOL_DEFS, runTool: runAssistantTool }); }
@@ -1371,8 +1410,35 @@ app.post('/api/ask', express.json(), async (req, res) => {
     catch (e) { console.error('askAI failed:', e.message); }
   }
   if (!answer) answer = 'Sampark AI is unavailable right now (no AI key configured on the server). Your question has been saved — please try again once the AI key is set.';
-  db.prepare('INSERT INTO ai_chats (role, content, created_at) VALUES (?,?,?)').run('assistant', answer, Date.now());
-  res.json({ ok: true, answer });
+  db.prepare('INSERT INTO ai_chats (role, content, created_at, conversation_id) VALUES (?,?,?,?)').run('assistant', answer, Date.now(), conv.id);
+  db.prepare('UPDATE ai_conversations SET updated_at=? WHERE id=?').run(Date.now(), conv.id);
+  res.json({ ok: true, answer, conversation_id: conv.id, title: conv.title });
+});
+
+// List past conversations (newest first) with message counts.
+app.get('/api/ask/conversations', (req, res) => {
+  const rows = db.prepare(`
+    SELECT c.id, c.title, c.created_at, c.updated_at,
+           (SELECT COUNT(*) FROM ai_chats m WHERE m.conversation_id=c.id) AS messages
+    FROM ai_conversations c ORDER BY c.updated_at DESC LIMIT 100`).all();
+  res.json(rows);
+});
+
+// Messages of one conversation (oldest first) — reopen and reengage.
+app.get('/api/ask/conversations/:id/messages', (req, res) => {
+  const conv = getConversation(req.params.id);
+  if (!conv) return res.status(404).json({ error: 'not found' });
+  const msgs = db.prepare('SELECT role, content, created_at FROM ai_chats WHERE conversation_id=? ORDER BY id ASC LIMIT 200').all(conv.id);
+  res.json({ ...conv, messages: msgs });
+});
+
+// Delete a conversation and all its messages.
+app.delete('/api/ask/conversations/:id', (req, res) => {
+  const conv = getConversation(req.params.id);
+  if (!conv) return res.status(404).json({ error: 'not found' });
+  db.prepare('DELETE FROM ai_chats WHERE conversation_id=?').run(conv.id);
+  db.prepare('DELETE FROM ai_conversations WHERE id=?').run(conv.id);
+  res.json({ ok: true });
 });
 
 app.get('/api/ask/history', (_req, res) => {
