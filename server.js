@@ -258,6 +258,17 @@ async function tryAutoSend(ticket, text, newStatus) {
 function nameRequestDraft() {
   return `Namaste 🙏 Thanks for reaching out to Sampark. Could you please share your name so our office can assist you better? — Team ${REP_NAME}`;
 }
+// Words that are never a person's name on their own — the template fallback
+// must reject replies made only of these (e.g. a citizen typing "register"
+// when asked for their name).
+const NAME_STOPWORDS = new Set(
+  ('register registration complaint complain request issue problem help ' +
+   'hello hi hey namaste namaskar greetings good morning evening afternoon ' +
+   'yes no ok okay please thanks thank thankyou sir madam ji ' +
+   'water road streetlight light drainage garbage sanitation pension ration ' +
+   'school hospital event wedding birthday invitation function ' +
+   'my i me we you your the a an to for of').split(' ')
+);
 // Template-mode name capture: accept short, name-shaped replies only.
 function fallbackName(text) {
   const t = String(text || '').replace(/\s+/g, ' ').trim();
@@ -265,6 +276,8 @@ function fallbackName(text) {
   if (t.split(' ').length > 3) return null;
   if (!/^[\p{L}\p{M} .'-]+$/u.test(t)) return null;
   if (/[?!.]/.test(t)) return null; // looks like a sentence, not a name
+  const words = t.toLowerCase().split(/[\s.'-]+/).filter(Boolean);
+  if (!words.length || words.every((w) => NAME_STOPWORDS.has(w))) return null;
   return t;
 }
 // TODO(product): replace template drafts with the LLM drafting service.
@@ -435,12 +448,18 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
       ticket.awaiting_name = 0;
       db.prepare("UPDATE citizens SET name=?, onboarding_step='details', updated_at=? WHERE wa_id=?").run(captured, now, waId);
       citizen.name = captured; citizen.onboarding_step = 'details';
-      const q = detailsQuestionDraft(captured, ticket.kind, ticket.category);
+      // Claude drafts the details question; template is the fallback, never the default.
+      let q = detailsQuestionDraft(captured, ticket.kind, ticket.category);
+      let qSrc = 'template';
+      try {
+        const aiQ = await ai.generateDetailsQuestion({ repName: REP_NAME, citizenName: captured, kind: ticket.kind, category: ticket.category, citizenMessage: text });
+        if (aiQ) { q = aiQ; qSrc = 'ai'; }
+      } catch (e) { console.error('AI details-question failed, using template:', e.message); }
       const sent = autoReplyOn() && await tryAutoSend(ticket, q, status);
       db.prepare('UPDATE tickets SET citizen_name=?, awaiting_name=0, pending_draft=?, draft_source=?, status=?, updated_at=? WHERE id=?')
-        .run(captured, sent ? null : q, sent ? null : 'template', status, now, ticket.id);
+        .run(captured, sent ? null : q, sent ? null : qSrc, status, now, ticket.id);
       ticket.pending_draft = sent ? null : q;
-      ticket.draft_source = sent ? null : 'template';
+      ticket.draft_source = sent ? null : qSrc;
       ticket.status = status;
     } else {
       // Not a name. Ask at most twice, then stop and treat it as a normal ticket.
@@ -461,12 +480,18 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
         ticket.status = status;
       } else {
         // Not a name on the first retry: never stay silent — acknowledge and ask for the name again (automatic).
-        const ack = "Thanks for writing in! Could you please share your name so our office can log your request properly?";
+        // Claude drafts it; template is the fallback, never the default.
+        let ack = "Thanks for writing in! Could you please share your name so our office can log your request properly?";
+        let ackSrc = 'template';
+        try {
+          const aiAck = await ai.generateNameRetry({ repName: REP_NAME, theirReply: text });
+          if (aiAck) { ack = aiAck; ackSrc = 'ai'; }
+        } catch (e) { console.error('AI name-retry failed, using template:', e.message); }
         const sent = autoReplyOn() && await tryAutoSend(ticket, ack, status);
         db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, updated_at=?, status=? WHERE id=?')
-          .run(sent ? null : ack, sent ? null : 'template', now, status, ticket.id);
+          .run(sent ? null : ack, sent ? null : ackSrc, now, status, ticket.id);
         ticket.pending_draft = sent ? null : ack;
-        ticket.draft_source = sent ? null : 'template';
+        ticket.draft_source = sent ? null : ackSrc;
         ticket.status = status;
       }
     }
@@ -478,18 +503,30 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
     ticket.issue_address = details.issue_address;
     ticket.event_datetime = details.event_datetime;
     ticket.venue = details.venue;
-    const prefix = detailsConfirmPrefix(ticket.citizen_name, ticket, details);
-    let draftText = generateDraft(ticket, text);
+    // Confirmed detail for Claude to weave into its reply; the template prefix
+    // below is only used when Claude is unavailable.
+    const noteBits = [];
+    if (ticket.kind === 'event') {
+      const when = [details.event_datetime, details.venue].filter(Boolean).join(' at ');
+      if (when) noteBits.push(`event noted: ${when}`);
+    } else if (details.issue_address) {
+      noteBits.push(`issue location saved: ${details.issue_address}`);
+    }
+    const contextNote = noteBits.join('; ') || null;
+    let draftText = null;
     let src = 'template';
     try {
-      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category: ticket.category, language: null, text, kind: ticket.kind });
+      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category: ticket.category, language: null, text, kind: ticket.kind, contextNote });
       if (aiDraft) { draftText = aiDraft; src = 'ai'; }
     } catch (e) { console.error('AI draft failed, using template:', e.message); }
-    const full = (prefix ? prefix + '\n\n' : '') + draftText;
-    const sent = !ticket.sensitive && autoReplyOn() && await tryAutoSend(ticket, full, status);
+    if (!draftText) {
+      const prefix = detailsConfirmPrefix(ticket.citizen_name, ticket, details);
+      draftText = (prefix ? prefix + '\n\n' : '') + generateDraft(ticket, text);
+    }
+    const sent = !ticket.sensitive && autoReplyOn() && await tryAutoSend(ticket, draftText, status);
     db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, status=?, updated_at=? WHERE id=?')
-      .run(sent ? null : full, sent ? null : src, status, now, ticket.id);
-    ticket.pending_draft = sent ? null : full;
+      .run(sent ? null : draftText, sent ? null : src, status, now, ticket.id);
+    ticket.pending_draft = sent ? null : draftText;
     ticket.draft_source = sent ? null : src;
     ticket.status = status;
   } else {
