@@ -11,6 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const { DatabaseSync } = require('node:sqlite');
 const ai = require('./lib/ai');
+const mc = require('./lib/montecarlo');
 
 // AI brief cache — the dashboard polls every 5s; never burn an LLM call per poll.
 const BRIEF_TTL_MS = 15 * 60 * 1000;
@@ -252,6 +253,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_name ON election_candidates(low
 try { db.exec('ALTER TABLE election_candidates ADD COLUMN facebook_handle TEXT'); } catch (e) {}
 try { db.exec('ALTER TABLE election_candidates ADD COLUMN instagram_handle TEXT'); } catch (e) {}
 try { db.exec('ALTER TABLE election_candidates ADD COLUMN linkedin_url TEXT'); } catch (e) {}
+// Monte Carlo win-probability inputs/outputs + LLM data-quality eval.
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN vote_share_mean REAL'); } catch (e) {}
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN vote_share_sd REAL'); } catch (e) {}
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN win_probability REAL'); } catch (e) {}
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN mc_bins TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN party_contenders TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN eval_score INTEGER'); } catch (e) {}
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN eval_notes TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN eval_ran_at INTEGER'); } catch (e) {}
+// One-time backfill: the old win_likelihood numbers were really vote-share
+// estimates, so seed the Monte Carlo inputs from them where research has not
+// yet supplied fresh values.
+try { db.exec(`UPDATE election_candidates SET vote_share_mean = win_likelihood WHERE vote_share_mean IS NULL AND win_likelihood IS NOT NULL`); } catch (e) {}
 db.exec(`CREATE TABLE IF NOT EXISTS candidate_social_posts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   candidate_id INTEGER NOT NULL,
@@ -1162,6 +1176,112 @@ function upsertIntelSnapshot(candidateId, day, c) {
     .run(candidateId, day, c.sentiment_score, c.win_likelihood, c.ticket_likelihood);
 }
 
+// Recompute Monte Carlo win probabilities for every candidate that has a
+// vote-share estimate. Writes win_probability + mc_bins; also mirrors the
+// probability into win_likelihood so the existing trend chart tracks it.
+function recomputeWinProbabilities() {
+  const rows = db.prepare(`SELECT id, vote_share_mean, vote_share_sd, confidence
+    FROM election_candidates WHERE vote_share_mean IS NOT NULL`).all();
+  if (!rows.length) return { simulated: 0 };
+  const inputs = rows.map((r) => ({
+    id: r.id,
+    vote_share_mean: r.vote_share_mean,
+    vote_share_sd: r.vote_share_sd || mc.sdForConfidence(r.confidence),
+  }));
+  const results = mc.simulate(inputs, 10000);
+  const upd = db.prepare(`UPDATE election_candidates
+    SET win_probability=?, win_likelihood=?, mc_bins=?, updated_at=? WHERE id=?`);
+  const now = Date.now();
+  for (const s of results) {
+    const wp = Math.round(s.win_probability * 10) / 10;
+    upd.run(wp, Math.round(s.win_probability), JSON.stringify(s.mc_bins), now, s.id);
+  }
+  return { simulated: results.length };
+}
+
+// LLM-based data-quality eval: audits candidate records for consistency
+// errors (wrong-party contenders, independent/party contradictions, number
+// sanity, cross-field contradictions). High-severity corrections with clear
+// in-data evidence are applied automatically; everything else is stored as
+// review notes on the candidate. Returns a summary or null when unavailable.
+async function runIntelEval() {
+  const rows = db.prepare('SELECT * FROM election_candidates').all()
+    .map((c) => {
+      try { c.party_contenders = JSON.parse(c.party_contenders || '[]'); } catch { c.party_contenders = []; }
+      return c;
+    });
+  if (!rows.length) return null;
+  const verdict = await ai.evaluateIntel(rows);
+  if (!verdict) return null;
+  const now = Date.now();
+  const byName = new Map(rows.map((r) => [String(r.name).toLowerCase(), r]));
+  let applied = 0;
+  const updEval = db.prepare(`UPDATE election_candidates
+    SET eval_score=?, eval_notes=?, eval_ran_at=?, updated_at=? WHERE id=?`);
+  // Store per-candidate issues + score.
+  const issuesByName = new Map();
+  for (const i of verdict.issues) {
+    const k = String(i.candidate || '').toLowerCase();
+    if (!issuesByName.has(k)) issuesByName.set(k, []);
+    issuesByName.get(k).push(i);
+  }
+  for (const r of rows) {
+    const k = String(r.name).toLowerCase();
+    updEval.run(verdict.score, JSON.stringify(issuesByName.get(k) || []), now, now, r.id);
+  }
+  // Auto-apply only high-confidence corrections on a strict field whitelist.
+  const allowed = new Set(['party', 'is_independent', 'ticket_likelihood',
+    'party_contenders', 'vote_share_mean', 'sentiment_label', 'sentiment_score']);
+  for (const x of verdict.corrections) {
+    if (!allowed.has(x.field)) continue;
+    const r = byName.get(String(x.candidate || '').toLowerCase());
+    if (!r) continue;
+    try {
+      if (x.field === 'party') {
+        db.prepare('UPDATE election_candidates SET party=?, updated_at=? WHERE id=?')
+          .run(String(x.new_value).slice(0, 60), now, r.id);
+      } else if (x.field === 'is_independent') {
+        db.prepare('UPDATE election_candidates SET is_independent=?, updated_at=? WHERE id=?')
+          .run(x.new_value ? 1 : 0, now, r.id);
+      } else if (x.field === 'ticket_likelihood') {
+        const v = Math.max(0, Math.min(100, Math.round(+x.new_value)));
+        if (isNaN(v)) continue;
+        db.prepare('UPDATE election_candidates SET ticket_likelihood=?, updated_at=? WHERE id=?')
+          .run(v, now, r.id);
+      } else if (x.field === 'party_contenders') {
+        const arr = (Array.isArray(x.new_value) ? x.new_value : [])
+          .map((s) => String(s || '').slice(0, 80)).filter(Boolean).slice(0, 6);
+        db.prepare('UPDATE election_candidates SET party_contenders=?, updated_at=? WHERE id=?')
+          .run(JSON.stringify(arr), now, r.id);
+      } else if (x.field === 'vote_share_mean') {
+        const v = Math.max(0, Math.min(100, +x.new_value));
+        if (isNaN(v)) continue;
+        db.prepare('UPDATE election_candidates SET vote_share_mean=?, vote_share_sd=?, updated_at=? WHERE id=?')
+          .run(Math.round(v * 10) / 10, mc.sdForConfidence(r.confidence), now, r.id);
+      } else if (x.field === 'sentiment_label') {
+        if (!['Positive', 'Mixed', 'Negative'].includes(x.new_value)) continue;
+        db.prepare('UPDATE election_candidates SET sentiment_label=?, updated_at=? WHERE id=?')
+          .run(x.new_value, now, r.id);
+      } else if (x.field === 'sentiment_score') {
+        const v = Math.max(-100, Math.min(100, Math.round(+x.new_value)));
+        if (isNaN(v)) continue;
+        db.prepare('UPDATE election_candidates SET sentiment_score=?, updated_at=? WHERE id=?')
+          .run(v, now, r.id);
+      }
+      applied++;
+      console.log(`[intel-eval] auto-corrected ${r.name}.${x.field}: ${x.reason || ''}`.slice(0, 200));
+    } catch (e) {
+      console.error(`[intel-eval] correction failed for ${r.name}.${x.field}:`, e.message);
+    }
+  }
+  return {
+    score: verdict.score,
+    issues: verdict.issues.length,
+    corrections_proposed: verdict.corrections.length,
+    corrections_applied: applied,
+  };
+}
+
 async function refreshElectionIntel() {
   console.log('[intel] starting election research…');
   const intel = await ai.researchElectionIntel({ constituency: CONSTITUENCY });
@@ -1176,36 +1296,66 @@ async function refreshElectionIntel() {
   let merged = 0;
   for (const c of intel.candidates) {
     const srcJson = JSON.stringify(c.sources || []);
-    const existing = db.prepare('SELECT id FROM election_candidates WHERE lower(name)=lower(?)').get(c.name);
+    const contJson = JSON.stringify(c.party_contenders || []);
+    const vsMean = c.vote_share === null || c.vote_share === undefined ? null : Math.round(+c.vote_share * 10) / 10;
+    const existing = db.prepare('SELECT id, confidence FROM election_candidates WHERE lower(name)=lower(?)').get(c.name);
     if (existing) {
-      db.prepare(`UPDATE election_candidates SET party=?, is_independent=?, ticket_likelihood=?, win_likelihood=?,
+      db.prepare(`UPDATE election_candidates SET party=?, is_independent=?, party_contenders=?,
+        ticket_likelihood=?, vote_share_mean=?, vote_share_sd=?,
         sentiment_score=?, sentiment_label=?, sentiment_summary=?, bio=?, current_activity=?, strategy=?,
         track_record=?, sources=?, confidence=?, updated_at=? WHERE id=?`)
-        .run(c.party || null, c.is_independent ? 1 : 0, c.ticket_likelihood, c.win_likelihood,
+        .run(c.party || null, c.is_independent ? 1 : 0, contJson,
+          c.ticket_likelihood, vsMean, mc.sdForConfidence(c.confidence),
           c.sentiment_score, c.sentiment_label, c.sentiment_summary, c.bio, c.current_activity, c.strategy,
           c.track_record, srcJson, c.confidence, now, existing.id);
-      upsertIntelSnapshot(existing.id, day, c);
     } else {
-      const r = db.prepare(`INSERT INTO election_candidates
-        (name, party, is_independent, ticket_likelihood, win_likelihood, sentiment_score, sentiment_label,
+      db.prepare(`INSERT INTO election_candidates
+        (name, party, is_independent, party_contenders, ticket_likelihood, vote_share_mean, vote_share_sd,
+         sentiment_score, sentiment_label,
          sentiment_summary, bio, current_activity, strategy, track_record, sources, confidence, manual, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`)
-        .run(c.name, c.party || null, c.is_independent ? 1 : 0, c.ticket_likelihood, c.win_likelihood,
-          c.sentiment_score, c.sentiment_label, c.sentiment_summary, c.bio, c.current_activity, c.strategy,
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`)
+        .run(c.name, c.party || null, c.is_independent ? 1 : 0, contJson,
+          c.ticket_likelihood, vsMean, mc.sdForConfidence(c.confidence),
+          c.sentiment_score, c.sentiment_label,
+          c.sentiment_summary, c.bio, c.current_activity, c.strategy,
           c.track_record, srcJson, c.confidence, now);
-      upsertIntelSnapshot(Number(r.lastInsertRowid), day, c);
     }
     merged++;
   }
+  // Monte Carlo: turn vote-share estimates into true win probabilities.
+  const sim = recomputeWinProbabilities();
+  // LLM eval: audit the merged records, auto-fix clear errors, note the rest.
+  let evalSummary = null;
+  try {
+    evalSummary = await runIntelEval();
+    // Corrections may have changed vote shares — re-simulate so the
+    // probabilities stay consistent with the corrected data.
+    if (evalSummary && evalSummary.corrections_applied) recomputeWinProbabilities();
+  } catch (e) { console.error('[intel] eval pass failed:', e.message); }
+  // Daily snapshots now track the Monte Carlo win probability.
+  const all = db.prepare('SELECT id, sentiment_score, win_probability, ticket_likelihood FROM election_candidates').all();
+  for (const r of all) {
+    const c = { sentiment_score: r.sentiment_score, win_likelihood: Math.round(r.win_probability || 0), ticket_likelihood: r.ticket_likelihood };
+    upsertIntelSnapshot(r.id, day, c);
+  }
+  let note = intel.race_summary || '';
+  if (sim.simulated) note += ` Monte Carlo: ${sim.simulated} candidates × 10,000 simulated elections.`;
+  if (evalSummary) note += ` Data-quality eval: score ${evalSummary.score}/100, ${evalSummary.corrections_applied} auto-fixed, ${evalSummary.issues} flagged for review.`;
   db.prepare('INSERT INTO intel_runs (ran_at, status, candidate_count, note) VALUES (?,?,?,?)')
-    .run(now, 'ok', merged, intel.race_summary || '');
-  console.log(`[intel] research complete: ${merged} candidates`);
-  return { ok: true, candidates: merged };
+    .run(now, 'ok', merged, note);
+  console.log(`[intel] research complete: ${merged} candidates, MC simulated ${sim.simulated}, eval ${evalSummary ? evalSummary.score : 'n/a'}`);
+  return { ok: true, candidates: merged, eval: evalSummary };
 }
 
 app.get('/api/election-intel', (req, res) => {
-  const candidates = db.prepare(`SELECT * FROM election_candidates ORDER BY COALESCE(win_likelihood, -1) DESC, name`).all()
-    .map((c) => { try { c.sources = JSON.parse(c.sources || '[]'); } catch { c.sources = []; } return c; });
+  const candidates = db.prepare(`SELECT * FROM election_candidates ORDER BY COALESCE(win_probability, -1) DESC, name`).all()
+    .map((c) => {
+      try { c.sources = JSON.parse(c.sources || '[]'); } catch { c.sources = []; }
+      try { c.party_contenders = JSON.parse(c.party_contenders || '[]'); } catch { c.party_contenders = []; }
+      try { c.mc_bins = JSON.parse(c.mc_bins || '[]'); } catch { c.mc_bins = []; }
+      try { c.eval_notes = JSON.parse(c.eval_notes || '[]'); } catch { c.eval_notes = []; }
+      return c;
+    });
   let snapshots = [];
   if (candidates.length) {
     const since = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
@@ -1230,6 +1380,20 @@ app.post('/api/election-intel/refresh', express.json(), (_req, res) => {
   res.json({ ok: true, started: true });
 });
 
+// On-demand data-quality eval (also runs automatically after every research
+// refresh): audits candidate records, auto-fixes clear errors, re-simulates
+// win probabilities, and stores review notes on each candidate.
+app.post('/api/election-intel/evaluate', express.json(), (_req, res) => {
+  (async () => {
+    try {
+      const summary = await runIntelEval();
+      if (summary && summary.corrections_applied) recomputeWinProbabilities();
+      console.log('[intel] manual eval complete:', JSON.stringify(summary));
+    } catch (e) { console.error('manual intel eval failed:', e.message); }
+  })();
+  res.json({ ok: true, started: true });
+});
+
 // Politician-added candidate: kept forever, never removed by research runs.
 // Accepts the full field set so researched candidates can be plugged in with
 // their analysis; anything omitted stays null.
@@ -1239,23 +1403,34 @@ app.post('/api/election-intel/candidates', express.json(), (req, res) => {
   const pct = (v) => (v === null || v === undefined || v === '' || isNaN(+v) ? null : Math.max(0, Math.min(100, Math.round(+v))));
   const snt = (v) => (v === null || v === undefined || v === '' || isNaN(+v) ? null : Math.max(-100, Math.min(100, Math.round(+v))));
   const str = (v, n) => String(v || '').slice(0, n) || null;
+  const vsRaw = (b.vote_share_mean !== undefined && b.vote_share_mean !== null && b.vote_share_mean !== '')
+    ? b.vote_share_mean : b.win_likelihood; // legacy field name carried a vote-share estimate
+  const vsMean = (vsRaw === null || vsRaw === undefined || vsRaw === '' || isNaN(+vsRaw))
+    ? null : Math.max(0, Math.min(100, Math.round(+vsRaw * 10) / 10));
+  const conf = ['high', 'medium', 'low'].includes(b.confidence) ? b.confidence : 'low';
+  const contenders = (Array.isArray(b.party_contenders) ? b.party_contenders
+    : String(b.party_contenders || '').split(','))
+    .map((s) => String(s || '').trim().slice(0, 80)).filter(Boolean).slice(0, 6);
   try {
     const r = db.prepare(`INSERT INTO election_candidates
-      (name, party, is_independent, ticket_likelihood, win_likelihood, sentiment_score, sentiment_label,
+      (name, party, is_independent, party_contenders, ticket_likelihood, vote_share_mean, vote_share_sd,
+       sentiment_score, sentiment_label,
        sentiment_summary, bio, current_activity, strategy, track_record, sources, confidence, manual, updated_at,
        facebook_handle, instagram_handle, linkedin_url)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)`)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)`)
       .run(String(b.name).trim().slice(0, 80), str(b.party, 60),
         /independent/i.test(String(b.party || '')) ? 1 : 0,
-        pct(b.ticket_likelihood), pct(b.win_likelihood), snt(b.sentiment_score),
+        JSON.stringify(contenders),
+        pct(b.ticket_likelihood), vsMean, mc.sdForConfidence(conf), snt(b.sentiment_score),
         ['Positive', 'Mixed', 'Negative'].includes(b.sentiment_label) ? b.sentiment_label : null,
         str(b.sentiment_summary, 400), str(b.bio, 400), str(b.current_activity, 400),
         str(b.strategy, 400), str(b.track_record, 400),
         JSON.stringify((Array.isArray(b.sources) ? b.sources : []).slice(0, 3)
           .map((s) => ({ title: String(s.title || s.url || '').slice(0, 120), url: String(s.url || '') }))
           .filter((s) => /^https?:\/\//.test(s.url))),
-        ['high', 'medium', 'low'].includes(b.confidence) ? b.confidence : 'low',
+        conf,
         Date.now(), str(b.facebook_handle, 160), str(b.instagram_handle, 80), str(b.linkedin_url, 300));
+    recomputeWinProbabilities();
     res.json({ ok: true, id: Number(r.lastInsertRowid) });
   } catch (e) {
     res.status(400).json({ error: 'that candidate is already on the list' });

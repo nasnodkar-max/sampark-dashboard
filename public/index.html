@@ -249,11 +249,18 @@
       <div id="raceSummary" style="font-size:14px;line-height:1.6;margin-bottom:14px"></div>
       <h3 style="margin:6px 0 8px">Trend — last 30 days
         <span class="chips" style="display:inline-flex;margin:0 0 0 10px;vertical-align:middle">
-          <button class="chip" id="mWin" onclick="intelMetric='win';loadIntel()">Win likelihood</button>
+          <button class="chip" id="mWin" onclick="intelMetric='win';loadIntel()">Win probability</button>
           <button class="chip" id="mSent" onclick="intelMetric='sentiment';loadIntel()">Sentiment</button>
         </span></h3>
       <canvas id="intelChart" style="width:100%;display:block"></canvas>
       <div id="chartLegend" style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12.5px;color:var(--muted)"></div>
+      <h3 style="margin:20px 0 4px">Win probability — Monte Carlo <span class="tag">10,000 simulated elections</span></h3>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">Each candidate's estimated vote share is simulated 10,000 times (wider curve = less certain). Win probability is the share of simulations they finish first — a true probability, not a vote share.</div>
+      <canvas id="mcWinChart" style="width:100%;display:block"></canvas>
+      <h4 style="margin:16px 0 8px;font-size:14px">Projected vote-share distributions <span style="font-weight:400;color:var(--muted);font-size:12px">(normalized — shape shows uncertainty)</span></h4>
+      <canvas id="mcDistChart" style="width:100%;display:block"></canvas>
+      <div id="mcLegend" style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12.5px;color:var(--muted)"></div>
+      <div id="mcEvalLine" style="margin-top:10px;font-size:12.5px;color:var(--muted)"></div>
     </div>
     <div class="card"><h2>Potential candidates <span class="tag">ranked by likelihood to win</span></h2>
       <div id="candList"><div class="empty">Loading…</div></div>
@@ -267,9 +274,9 @@
         <button class="btn primary" onclick="addCandidate()">Add</button>
       </div>
       <details style="margin-top:10px;font-size:13px">
-        <summary style="cursor:pointer;color:var(--muted)">Add analysis details (win likelihood, sentiment, strategy, sources…)</summary>
+        <summary style="cursor:pointer;color:var(--muted)">Add analysis details (vote share, sentiment, strategy, sources…)</summary>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:10px">
-          <input id="ncWin" type="number" min="0" max="100" placeholder="Win likelihood % (0–100)" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px">
+          <input id="ncWin" type="number" min="0" max="100" placeholder="Est. vote share % (0–100)" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px">
           <input id="ncSent" type="number" min="-100" max="100" placeholder="Sentiment score (−100 to 100)" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px">
           <select id="ncSentLabel" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px">
             <option value="">Sentiment label…</option><option>Positive</option><option>Mixed</option><option>Negative</option>
@@ -554,6 +561,7 @@ async function loadIntel(){
     : 'No research completed yet — click “Refresh now” to run the first deep research, or add a candidate manually below.';
   $('raceSummary').innerHTML = d.race_summary ? `<b>The race so far:</b> ${esc(d.race_summary)}` : '';
   drawIntelChart(cands, d.snapshots || []);
+  drawMcCharts(cands);
   $('candList').innerHTML = cands.length ? cands.map((c, i) => candCard(c, i)).join('')
     : '<div class="empty">No candidates yet.</div>';
   cands.forEach(c => loadSocPosts(c.id));
@@ -568,6 +576,17 @@ function sentPill(c){
   const sc = c.sentiment_score==null ? '' : ` (${c.sentiment_score>0?'+':''}${c.sentiment_score})`;
   return `<span class="pill ${cls}">sentiment: ${esc(c.sentiment_label||'Mixed')}${sc}</span>`;
 }
+function evalBadge(c){
+  const notes = Array.isArray(c.eval_notes) ? c.eval_notes : [];
+  const highs = notes.filter(n => n.severity === 'high');
+  const score = c.eval_score == null ? '' : ` · ${c.eval_score}/100`;
+  if(highs.length)
+    return `<span class="pill pr-High" title="${esc(highs.map(h => h.problem).join(' | '))}">⚠ ${highs.length} data issue${highs.length > 1 ? 's' : ''}${score}</span>`;
+  if(notes.length)
+    return `<span class="pill p-new" title="${esc(notes.map(n => n.problem).join(' | '))}">✓ checked${score} · ${notes.length} note${notes.length > 1 ? 's' : ''}</span>`;
+  if(c.eval_score != null) return `<span class="pill p-resolved">✓ data checked${score}</span>`;
+  return '';
+}
 function candCard(c, i){
   let srcs = [];
   try { srcs = Array.isArray(c.sources) ? c.sources : JSON.parse(c.sources || '[]'); } catch(e){}
@@ -576,6 +595,12 @@ function candCard(c, i){
     : (c.party ? `<span class="pill p-in_progress">${esc(c.party)}</span>` : '');
   const confCls = c.confidence==='high' ? 'p-resolved' : c.confidence==='low' ? 'pr-High' : 'p-new';
   const sec = (label, txt) => txt ? `<div style="margin-top:7px"><span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">${label}</span><div class="sum" style="margin-top:2px">${esc(txt)}</div></div>` : '';
+  const contenders = (Array.isArray(c.party_contenders) ? c.party_contenders : []).filter(Boolean);
+  const winP = c.win_probability != null ? Math.round(c.win_probability * 10) / 10 : c.win_likelihood;
+  const vsLine = c.vote_share_mean != null
+    ? `<div style="font-size:12.5px;color:var(--muted);margin-top:3px">Est. vote share ~${c.vote_share_mean}%${c.confidence === 'low' ? ' (uncertain)' : ''} — win probability comes from 10,000 Monte Carlo simulations of these shares</div>` : '';
+  const notes = Array.isArray(c.eval_notes) ? c.eval_notes : [];
+  const evalSec = notes.length ? `<details style="margin-top:8px;font-size:12.5px"><summary style="cursor:pointer;color:var(--muted)">Data-quality notes (${notes.length})</summary><ul style="margin:6px 0 0 18px;padding:0;color:#4A463C">${notes.map(n => `<li><b>${esc(n.severity)}</b>${n.field ? ` · ${esc(n.field)}` : ''} — ${esc(n.problem)}</li>`).join('')}</ul></details>` : '';
   return `<div class="insight">
     <div class="rank">#${i+1}</div>
     <div class="body" style="flex:1">
@@ -583,10 +608,14 @@ function candCard(c, i){
         <b style="font-size:16px">${esc(c.name)}</b>
         ${partyPill}
         ${c.manual ? '<span class="pill p-new">your pick</span>' : `<span class="pill ${confCls}">${esc(c.confidence||'low')} confidence</span>`}
+        ${evalBadge(c)}
         <span style="flex:1"></span>
         <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="deleteCandidate(${c.id}, '${esc(c.name).replace(/'/g, "\\'")}')">Remove</button>
       </div>
-      <div style="margin-top:8px">${pctBar('Win likelihood', c.win_likelihood)}${pctBar('Party ticket', c.ticket_likelihood)}</div>
+      <div style="margin-top:8px">${pctBar('Win probability (Monte Carlo)', winP)}${pctBar('Party ticket', c.ticket_likelihood)}</div>
+      ${vsLine}
+      ${contenders.length ? `<div style="margin-top:7px"><span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Same-party ticket contenders</span><div class="sum" style="margin-top:2px">${contenders.map(s => esc(s)).join(', ')}</div></div>` : ''}
+      ${evalSec}
       <div style="margin:6px 0">${sentPill(c)}${c.sentiment_summary ? ` <span style="font-size:13px;color:#4A463C">${esc(c.sentiment_summary)}</span>` : ''}</div>
       ${sec('Bio', c.bio)}
       ${sec('What they are doing now', c.current_activity)}
@@ -668,6 +697,91 @@ function drawIntelChart(cands, snaps){
   ).join('');
 }
 
+function drawMcCharts(cands){
+  const wcv = $('mcWinChart'), dcv = $('mcDistChart');
+  if(!wcv || !dcv) return;
+  const dpr = window.devicePixelRatio || 1;
+  const col = (c) => CHART_COLORS[cands.indexOf(c) % CHART_COLORS.length];
+  // --- win probability bars ---
+  const withP = cands.filter(c => c.win_probability != null);
+  const W = Math.max(320, wcv.parentElement.clientWidth - 44);
+  const rowH = 30, H = Math.max(64, withP.length * rowH + 44);
+  wcv.width = W * dpr; wcv.height = H * dpr; wcv.style.height = H + 'px';
+  const ctx = wcv.getContext('2d');
+  ctx.scale(dpr, dpr); ctx.clearRect(0, 0, W, H);
+  ctx.font = '12px sans-serif';
+  const padL = 172, padR = 64, padT = 10;
+  if(!withP.length){
+    ctx.fillStyle = '#7A746A';
+    ctx.fillText('No simulation data yet — run a research refresh to simulate.', 10, 30);
+  } else {
+    withP.forEach((c, i) => {
+      const y = padT + i * rowH;
+      ctx.fillStyle = '#3E3A32';
+      ctx.fillText(c.name.length > 24 ? c.name.slice(0, 23) + '…' : c.name, 8, y + 17);
+      const bw = (W - padL - padR) * Math.max(0, Math.min(100, c.win_probability)) / 100;
+      ctx.fillStyle = col(c);
+      ctx.beginPath();
+      if(ctx.roundRect) ctx.roundRect(padL, y + 4, Math.max(3, bw), 16, 8); else ctx.rect(padL, y + 4, Math.max(3, bw), 16);
+      ctx.fill();
+      ctx.fillStyle = '#3E3A32';
+      ctx.fillText((Math.round(c.win_probability * 10) / 10) + '%', padL + Math.max(3, bw) + 8, y + 17);
+    });
+    ctx.fillStyle = '#7A746A';
+    [0, 25, 50, 75, 100].forEach(t => {
+      const x = padL + (W - padL - padR) * t / 100;
+      ctx.fillText(t + '%', x - 10, H - 10);
+    });
+  }
+  // --- vote-share distribution curves (normalized shapes show uncertainty) ---
+  const W2 = Math.max(320, dcv.parentElement.clientWidth - 44), H2 = 240;
+  dcv.width = W2 * dpr; dcv.height = H2 * dpr; dcv.style.height = H2 + 'px';
+  const c2 = dcv.getContext('2d');
+  c2.scale(dpr, dpr); c2.clearRect(0, 0, W2, H2);
+  c2.font = '11px sans-serif';
+  const BIN_MAX = 60;
+  const distCands = cands.filter(c => Array.isArray(c.mc_bins) && c.mc_bins.length && Math.max(...c.mc_bins) > 0);
+  const pL = 40, pR = 14, pT = 12, pB = 30;
+  if(!distCands.length){
+    c2.fillStyle = '#7A746A';
+    c2.fillText('No distribution data yet.', pL, H2 / 2);
+  } else {
+    const X = v => pL + (v / BIN_MAX) * (W2 - pL - pR);
+    const Y = t => pT + (1 - t) * (H2 - pT - pB);
+    c2.strokeStyle = '#E8E2D2'; c2.fillStyle = '#7A746A'; c2.lineWidth = 1;
+    for(let g = 0; g <= 6; g++){
+      const v = BIN_MAX * g / 6, x = X(v);
+      c2.beginPath(); c2.moveTo(x, pT); c2.lineTo(x, H2 - pB); c2.stroke();
+      c2.fillText(v + '%', x - 10, H2 - 10);
+    }
+    distCands.forEach(cc => {
+      const peak = Math.max(...cc.mc_bins);
+      c2.strokeStyle = col(cc); c2.lineWidth = 2.5; c2.beginPath();
+      cc.mc_bins.forEach((b, i) => {
+        const x = X((i + 0.5) / cc.mc_bins.length * BIN_MAX);
+        const y = Y(b / peak);
+        if(i === 0) c2.moveTo(x, y); else c2.lineTo(x, y);
+      });
+      c2.stroke();
+    });
+  }
+  $('mcLegend').innerHTML = distCands.map(cc =>
+    `<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${col(cc)};margin-right:5px"></span>${esc(cc.name)}${cc.vote_share_mean != null ? ` · ~${cc.vote_share_mean}% votes` : ''}</span>`
+  ).join('');
+  const scored = cands.filter(c => c.eval_score != null);
+  const flagged = cands.reduce((n, c) => n + (Array.isArray(c.eval_notes) ? c.eval_notes.filter(x => x.severity === 'high').length : 0), 0);
+  $('mcEvalLine').innerHTML = scored.length
+    ? `LLM data-quality eval: avg score <b>${Math.round(scored.reduce((a, c) => a + c.eval_score, 0) / scored.length)}/100</b>${flagged ? ` · <b style="color:#B3372B">${flagged} high-severity issue${flagged > 1 ? 's' : ''} flagged</b> on cards below` : ' · no high-severity issues'} · <button class="btn ghost" style="padding:3px 10px;font-size:11.5px" onclick="runIntelEval()">↻ Re-run eval</button>`
+    : '';
+}
+
+async function runIntelEval(){
+  toast('Data-quality eval started — about a minute…');
+  try { await api('/api/election-intel/evaluate', { method: 'POST' }); }
+  catch(e){ toast('Eval failed: ' + e.message); return; }
+  setTimeout(() => { if(activeTab === 'intel') loadIntel(); }, 60000);
+}
+
 async function refreshIntel(){
   toast('Deep research started — this takes a few minutes…');
   try { await api('/api/election-intel/refresh', {method:'POST'}); }
@@ -693,7 +807,7 @@ async function addCandidate(){
   }).filter(s => /^https?:\/\//.test(s.url)).slice(0, 3);
   const payload = {
     name, party, bio,
-    win_likelihood: v('ncWin'), sentiment_score: v('ncSent'),
+    vote_share_mean: v('ncWin') === '' ? null : +v('ncWin'), sentiment_score: v('ncSent'),
     sentiment_label: v('ncSentLabel') || null, confidence: v('ncConf') || 'low',
     sentiment_summary: v('ncSentSum'), current_activity: v('ncActivity'),
     strategy: v('ncStrategy'), track_record: v('ncTrack'), sources,
