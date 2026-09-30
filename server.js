@@ -1317,7 +1317,7 @@ app.post('/api/election-intel/candidates/:id/posts', express.json(), (req, res) 
     VALUES (?,?,?,?,?,?)
     ON CONFLICT(candidate_id, platform, post_url)
     DO UPDATE SET caption=excluded.caption, posted_at=excluded.posted_at, fetched_at=excluded.fetched_at`);
-  const txn = db.transaction((posts) => {
+  const txn = (posts) => {
     for (const p of posts.slice(0, 12)) {
       const url = String(p.post_url || '').trim().slice(0, 500);
       if (!/^https?:\/\//.test(url)) continue;
@@ -1329,7 +1329,7 @@ app.post('/api/election-intel/candidates/:id/posts', express.json(), (req, res) 
       AND id NOT IN (SELECT id FROM candidate_social_posts
         WHERE candidate_id=? AND platform=? ORDER BY COALESCE(posted_at,0) DESC LIMIT 12)`)
       .run(id, platform, id, platform);
-  });
+  };
   txn(b.posts);
   if (b.handle) {
     const col = platform === 'facebook' ? 'facebook_handle' : 'instagram_handle';

@@ -27,6 +27,10 @@ function sh(cmd, args) {
   } catch (e) { console.error(`  CLI failed: ${cmd} ${args.join(' ')}: ${String(e.message).slice(0, 120)}`); return null; }
 }
 const toMs = (v) => { const t = Date.parse(v); return Number.isFinite(t) ? t : null; };
+// Instagram CLI returns created_at ("YYYY-MM-DD HH:MM:SS"); Facebook CLI
+// returns post_created_at {utc|user_local}. Accept either shape.
+const postedMs = (p) => toMs(p.created_at) ||
+  toMs(p.post_created_at && (p.post_created_at.utc || p.post_created_at.user_local));
 
 function fetchInstagram(username) {
   const raw = sh('instagram-cli', ['posts', '--account-id', IG_ACCOUNT_ID, '--username', username.replace(/^@/, ''), '--limit', '8']);
@@ -36,7 +40,7 @@ function fetchInstagram(username) {
     .slice(0, 6).map((p) => ({
       post_url: p.url,
       caption: (p.post_caption || '').slice(0, 600),
-      posted_at: toMs(p.post_created_at && (p.post_created_at.utc || p.post_created_at.user_local)),
+      posted_at: postedMs(p),
     }));
 }
 function fbProfileId(handle) {
@@ -53,7 +57,7 @@ function fetchFacebook(handle) {
   return (d.posts || []).slice(0, 6).map((p) => ({
     post_url: p.url,
     caption: (p.post_caption || '').slice(0, 600),
-    posted_at: toMs(p.post_created_at && (p.post_created_at.utc || p.post_created_at.user_local)),
+    posted_at: postedMs(p),
   })).filter((p) => p.post_url);
 }
 
