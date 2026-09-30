@@ -262,6 +262,9 @@ try { db.exec('ALTER TABLE election_candidates ADD COLUMN party_contenders TEXT'
 try { db.exec('ALTER TABLE election_candidates ADD COLUMN eval_score INTEGER'); } catch (e) {}
 try { db.exec('ALTER TABLE election_candidates ADD COLUMN eval_notes TEXT'); } catch (e) {}
 try { db.exec('ALTER TABLE election_candidates ADD COLUMN eval_ran_at INTEGER'); } catch (e) {}
+// Short display badge on a candidate card, e.g. "Probable Congress candidate".
+// Not touched by research merges, so it persists across daily runs.
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN badge TEXT'); } catch (e) {}
 // One-time backfill: the old win_likelihood numbers were really vote-share
 // estimates, so seed the Monte Carlo inputs from them where research has not
 // yet supplied fresh values.
@@ -1199,6 +1202,84 @@ function recomputeWinProbabilities() {
   return { simulated: results.length };
 }
 
+// One-time Election Intel history seed. Folds the generic "Congress TBD"
+// placeholder into Chirag Datta Naik as the probable Congress candidate,
+// re-runs the Monte Carlo simulation on the corrected field, and backfills
+// 29 days of dummy win-probability trend data (Kamat 86-92%, Congress
+// 12%->8%, others <2%) so the 30-day trend chart has history. Guarded by an
+// app flag — runs once, never overwrites real snapshots.
+function seedIntelHistory() {
+  try {
+    db.exec('CREATE TABLE IF NOT EXISTS app_flags (key TEXT PRIMARY KEY, value TEXT)');
+    if (db.prepare(`SELECT value FROM app_flags WHERE key='intel_history_seeded'`).get()) return;
+    // 1. Remove the Congress TBD placeholder; Chirag takes the Congress slot.
+    const tbd = db.prepare(`SELECT id FROM election_candidates WHERE lower(name) LIKE '%tbd%'`).get();
+    if (tbd) {
+      db.prepare('DELETE FROM candidate_snapshots WHERE candidate_id=?').run(tbd.id);
+      db.prepare('DELETE FROM candidate_social_posts WHERE candidate_id=?').run(tbd.id);
+      db.prepare('DELETE FROM election_candidates WHERE id=?').run(tbd.id);
+      console.log('[intel] removed Congress TBD placeholder');
+    }
+    const chirag = db.prepare(`SELECT id FROM election_candidates WHERE lower(name) LIKE '%chirag%datta%naik%'`).get()
+      || db.prepare(`SELECT id FROM election_candidates WHERE lower(name) LIKE '%chirag%naik%'`).get();
+    if (chirag) {
+      db.prepare(`UPDATE election_candidates
+        SET party=?, is_independent=0, vote_share_mean=?, vote_share_sd=?, badge=?, updated_at=?
+        WHERE id=?`)
+        .run('Congress (INC)', 42, mc.sdForConfidence('low'), 'Probable Congress candidate', Date.now(), chirag.id);
+      console.log('[intel] Chirag Datta Naik set as probable Congress candidate');
+    }
+    // Pin the current simulation into the requested bands: Kamat 86-92%, Chirag (Congress) 8-12%, rest <2%.
+    const kamat = db.prepare(`SELECT id FROM election_candidates WHERE lower(name) LIKE '%digambar%kamat%'`).get()
+      || db.prepare(`SELECT id FROM election_candidates WHERE lower(name) LIKE '%kamat%'`).get();
+    if (kamat) {
+      db.prepare(`UPDATE election_candidates SET vote_share_mean=?, vote_share_sd=?, updated_at=? WHERE id=?`)
+        .run(52, mc.sdForConfidence('high'), Date.now(), kamat.id);
+    }
+    // 2. Re-simulate win probabilities on the corrected field.
+    recomputeWinProbabilities();
+    // 3. Backfill 29 days of dummy trend history (deterministic).
+    let seed = 20260930;
+    const srand = () => {
+      seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const cands = db.prepare('SELECT id, name, sentiment_score FROM election_candidates').all();
+    const hasSnap = db.prepare('SELECT id FROM candidate_snapshots WHERE candidate_id=? AND day=?');
+    const insSnap = db.prepare(`INSERT INTO candidate_snapshots
+      (candidate_id, day, sentiment_score, win_likelihood, ticket_likelihood) VALUES (?,?,?,?,?)`);
+    let kval = 89;
+    for (const c of cands) {
+      const nm = String(c.name).toLowerCase();
+      const isKamat = nm.includes('kamat');
+      const isChirag = nm.includes('chirag');
+      for (let d = 29; d >= 1; d--) {
+        const day = new Date(Date.now() - d * 864e5).toISOString().slice(0, 10);
+        if (hasSnap.get(c.id, day)) continue;
+        let w;
+        if (isKamat) {
+          kval += (srand() - 0.5) * 2.4;
+          kval = Math.max(86, Math.min(92, kval));
+          w = Math.round(kval * 10) / 10;
+        } else if (isChirag) {
+          const t = (29 - d) / 28; // 12% a month ago -> 8% yesterday
+          w = Math.round((12 - 4 * t + (srand() - 0.5) * 0.8) * 10) / 10;
+          w = Math.max(8, Math.min(12, w));
+        } else {
+          w = Math.round((0.3 + srand() * 1.5) * 10) / 10;
+        }
+        const s = c.sentiment_score == null ? null
+          : Math.max(-100, Math.min(100, Math.round(c.sentiment_score + (srand() - 0.5) * 10)));
+        insSnap.run(c.id, day, s, w, null);
+      }
+    }
+    db.prepare(`INSERT INTO app_flags (key, value) VALUES ('intel_history_seeded','1')`).run();
+    console.log('[intel] seeded 29-day dummy trend history');
+  } catch (e) { console.error('[intel] history seed failed:', e.message); }
+}
+
 // LLM-based data-quality eval: audits candidate records for consistency
 // errors (wrong-party contenders, independent/party contradictions, number
 // sanity, cross-field contradictions). High-severity corrections with clear
@@ -1985,6 +2066,7 @@ function scheduleDailyElectionIntel() {
     }
   } catch (e) { console.error('intel cold-start check failed:', e.message); }
 }
+seedIntelHistory();
 scheduleDailyElectionIntel();
 
 module.exports = { db, handleIncoming };

@@ -607,6 +607,7 @@ function candCard(c, i){
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <b style="font-size:16px">${esc(c.name)}</b>
         ${partyPill}
+        ${c.badge ? `<span class="pill p-in_progress">${esc(c.badge)}</span>` : ''}
         ${c.manual ? '<span class="pill p-new">your pick</span>' : `<span class="pill ${confCls}">${esc(c.confidence||'low')} confidence</span>`}
         ${evalBadge(c)}
         <span style="flex:1"></span>
