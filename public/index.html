@@ -737,17 +737,20 @@ function renderSocPosts(id, plat){
   const d = socCache[id];
   if(!d){ box.innerHTML = '<span style="color:var(--muted)">Loading recent posts…</span>'; return; }
   const list = (d[plat] || []);
-  const upd = d.fetched_at ? ` <span style="color:var(--muted);font-size:11.5px">· updated ${new Date(d.fetched_at).toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</span>` : '';
+  const upd = d.fetched_at ? `<div style="color:var(--muted);font-size:11.5px;margin:2px 0 8px">Updated ${new Date(d.fetched_at).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})} · refreshes every 2 hours</div>` : '';
   if(d.error){ box.innerHTML = '<span style="color:var(--muted)">Could not load posts.</span>'; return; }
   if(!list.length){
-    box.innerHTML = `<span style="color:var(--muted)">No ${plat} posts tracked yet — add the candidate's handle above${upd}.</span>`;
+    box.innerHTML = `<span style="color:var(--muted)">No ${plat} posts tracked yet — add the candidate's handle above.</span>${upd}`;
     return;
   }
-  box.innerHTML = list.map(p=>`
-    <div style="padding:7px 0;border-top:1px solid var(--line)">
-      <a href="${esc(p.post_url)}" target="_blank" rel="noopener" style="color:var(--terra-dark);font-size:12.5px;font-weight:600">${socDate(p.posted_at)||'Recent'} ↗</a>${upd}
-      <div style="font-size:13px;color:#4A463C;margin-top:2px">${esc((p.caption||'').slice(0,220))}${(p.caption||'').length>220?'…':''}</div>
-    </div>`).join('');
+  box.innerHTML = upd + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px">' + list.map(p=>`
+    <div style="background:#fffdf8;border:1px solid var(--line);border-radius:12px;padding:12px 13px;display:flex;flex-direction:column;gap:7px;box-shadow:0 1px 3px rgba(60,45,25,.06)">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <span style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">${socDate(p.posted_at)||'Recent'}</span>
+        <a href="${esc(p.post_url)}" target="_blank" rel="noopener" style="font-size:12px;color:var(--terra-dark);font-weight:600;white-space:nowrap">View post ↗</a>
+      </div>
+      <div style="font-size:13px;color:#4A463C;line-height:1.5">${esc((p.caption||'(no caption)').slice(0,200))}${(p.caption||'').length>200?'…':''}</div>
+    </div>`).join('') + '</div>';
 }
 function socDraft(id, k, v){
   socDrafts[id] = socDrafts[id] || {};
@@ -768,7 +771,7 @@ async function saveSocHandles(id){
   try {
     await api('/api/election-intel/candidates/'+id+'/social', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     openSocEdits.delete(id); delete socDrafts[id];
-    toast('Social handles saved — posts refresh daily');
+    toast('Social handles saved — posts refresh every 2 hours');
     loadIntel();
   } catch(e){ toast('Save failed: '+e.message); }
 }
