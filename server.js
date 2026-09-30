@@ -540,7 +540,7 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
       let draftText = generateDraft(ticket, text); // template fallback
       let src = 'template';
       try {
-        const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text, kind });
+        const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text, kind, ticketId: id });
         if (aiDraft) { draftText = aiDraft; src = 'ai'; }
       } catch (e) { console.error('AI draft failed, using template:', e.message); }
       draftText += ticketRefLine(id); // every citizen gets their ticket number up front
@@ -587,7 +587,7 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
         let draftText = generateDraft(ticket, text);
         let src = 'template';
         try {
-          const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category: ticket.category, language: null, text });
+          const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category: ticket.category, language: null, text, ticketId: ticket.id });
           if (aiDraft) { draftText = aiDraft; src = 'ai'; }
         } catch (e) { console.error('AI draft failed, using template:', e.message); }
         draftText += ticketRefLine(ticket.id); // citizen gets their ticket number with the first substantive reply
@@ -635,7 +635,7 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
     let draftText = null;
     let src = 'template';
     try {
-      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category: ticket.category, language: null, text, kind: ticket.kind, contextNote });
+      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category: ticket.category, language: null, text, kind: ticket.kind, contextNote, ticketId: ticket.id });
       if (aiDraft) { draftText = aiDraft; src = 'ai'; }
     } catch (e) { console.error('AI draft failed, using template:', e.message); }
     if (!draftText) {
@@ -669,9 +669,12 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
     let draftText = generateDraft({ ...ticket, category }, text);
     let src = 'template';
     try {
-      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text, kind: ticket.kind });
+      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text, kind: ticket.kind, ticketId: ticket.id });
       if (aiDraft) { draftText = aiDraft; src = 'ai'; }
     } catch (e) { console.error('AI draft failed, using template:', e.message); }
+    // Citizen asking about their ticket number on an existing ticket: guarantee the
+    // exact number is in the reply even if the draft didn't state it.
+    if (/ticket\s*(number|id|no\.?|#)/i.test(text)) draftText += ticketRefLine(ticket.id);
     const sent = !sensitive && autoReplyOn() && await tryAutoSend(ticket, draftText, status);
     db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, category=?, sensitive=?, updated_at=?, status=? WHERE id=?')
       .run(sent ? null : draftText, sent ? null : src, category, sensitive ? 1 : 0, now, status, ticket.id);
