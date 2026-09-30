@@ -239,6 +239,24 @@
         <input id="ncBio" placeholder="One-line bio (optional)" style="flex:2;min-width:200px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:14px">
         <button class="btn primary" onclick="addCandidate()">Add</button>
       </div>
+      <details style="margin-top:10px;font-size:13px">
+        <summary style="cursor:pointer;color:var(--muted)">Add analysis details (win likelihood, sentiment, strategy, sources…)</summary>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:10px">
+          <input id="ncWin" type="number" min="0" max="100" placeholder="Win likelihood % (0–100)" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px">
+          <input id="ncSent" type="number" min="-100" max="100" placeholder="Sentiment score (−100 to 100)" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px">
+          <select id="ncSentLabel" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px">
+            <option value="">Sentiment label…</option><option>Positive</option><option>Mixed</option><option>Negative</option>
+          </select>
+          <select id="ncConf" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px">
+            <option value="low">Confidence: low</option><option value="medium">Confidence: medium</option><option value="high">Confidence: high</option>
+          </select>
+        </div>
+        <textarea id="ncSentSum" rows="2" placeholder="Sentiment summary (why)" style="width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px"></textarea>
+        <textarea id="ncActivity" rows="2" placeholder="Lately in news & social media (recent moves, statements)" style="width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px"></textarea>
+        <textarea id="ncStrategy" rows="2" placeholder="Likely 2027 strategy" style="width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px"></textarea>
+        <textarea id="ncTrack" rows="2" placeholder="Track record vs noise (real groundwork or mostly online?)" style="width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px"></textarea>
+        <textarea id="ncSources" rows="2" placeholder="Sources — one per line: Title | https://…" style="width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px"></textarea>
+      </details>
     </div>
   </div>
 
@@ -611,11 +629,25 @@ async function refreshIntel(){
 }
 
 async function addCandidate(){
-  const name = $('ncName').value.trim(), party = $('ncParty').value.trim(), bio = $('ncBio').value.trim();
+  const v = (id) => $(id).value.trim();
+  const name = v('ncName'), party = v('ncParty'), bio = v('ncBio');
   if(!name){ toast('Name is required'); return; }
+  const sources = v('ncSources').split('\n').map(l => {
+    const p = l.split('|'); const url = (p.pop() || '').trim();
+    const title = p.join('|').trim();
+    return { title: title || url, url };
+  }).filter(s => /^https?:\/\//.test(s.url)).slice(0, 3);
+  const payload = {
+    name, party, bio,
+    win_likelihood: v('ncWin'), sentiment_score: v('ncSent'),
+    sentiment_label: v('ncSentLabel') || null, confidence: v('ncConf') || 'low',
+    sentiment_summary: v('ncSentSum'), current_activity: v('ncActivity'),
+    strategy: v('ncStrategy'), track_record: v('ncTrack'), sources
+  };
   try {
-    await api('/api/election-intel/candidates', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, party, bio})});
-    $('ncName').value = ''; $('ncParty').value = ''; $('ncBio').value = '';
+    await api('/api/election-intel/candidates', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    ['ncName','ncParty','ncBio','ncWin','ncSent','ncSentLabel','ncSentSum','ncActivity','ncStrategy','ncTrack','ncSources'].forEach(id => $(id).value = '');
+    $('ncConf').value = 'low';
     toast('Candidate added');
     loadIntel();
   } catch(e){ toast('Could not add: '+e.message); }
