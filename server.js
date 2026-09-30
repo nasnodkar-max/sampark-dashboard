@@ -1211,7 +1211,7 @@ function recomputeWinProbabilities() {
 function seedIntelHistory() {
   try {
     db.exec('CREATE TABLE IF NOT EXISTS app_flags (key TEXT PRIMARY KEY, value TEXT)');
-    if (db.prepare(`SELECT value FROM app_flags WHERE key='intel_history_seeded'`).get()) return;
+    if (db.prepare(`SELECT value FROM app_flags WHERE key='intel_history_seeded_v2'`).get()) return;
     // 1. Remove the Congress TBD placeholder; Chirag takes the Congress slot.
     const tbd = db.prepare(`SELECT id FROM election_candidates WHERE lower(name) LIKE '%tbd%'`).get();
     if (tbd) {
@@ -1275,7 +1275,13 @@ function seedIntelHistory() {
         insSnap.run(c.id, day, s, w, null);
       }
     }
-    db.prepare(`INSERT INTO app_flags (key, value) VALUES ('intel_history_seeded','1')`).run();
+    // 4. Align today's snapshot with the freshly recomputed Monte Carlo
+    // probabilities so the trend chart's right edge matches the MC bars
+    // (the snapshot written by the earlier research run predates the fix).
+    const todayStr = new Date().toISOString().slice(0, 10);
+    for (const c of db.prepare('SELECT * FROM election_candidates').all()) upsertIntelSnapshot(c.id, todayStr, c);
+    console.log('[intel] refreshed today snapshot with corrected win probabilities');
+    db.prepare(`INSERT INTO app_flags (key, value) VALUES ('intel_history_seeded_v2','1')`).run();
     console.log('[intel] seeded 29-day dummy trend history');
   } catch (e) { console.error('[intel] history seed failed:', e.message); }
 }
