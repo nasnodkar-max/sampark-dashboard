@@ -1188,18 +1188,30 @@ app.post('/api/election-intel/refresh', express.json(), (_req, res) => {
 });
 
 // Politician-added candidate: kept forever, never removed by research runs.
+// Accepts the full field set so researched candidates can be plugged in with
+// their analysis; anything omitted stays null.
 app.post('/api/election-intel/candidates', express.json(), (req, res) => {
-  const { name, party, bio } = req.body || {};
-  if (!name || !String(name).trim()) return res.status(400).json({ error: 'name is required' });
+  const b = req.body || {};
+  if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'name is required' });
+  const pct = (v) => (v === null || v === undefined || v === '' || isNaN(+v) ? null : Math.max(0, Math.min(100, Math.round(+v))));
+  const snt = (v) => (v === null || v === undefined || v === '' || isNaN(+v) ? null : Math.max(-100, Math.min(100, Math.round(+v))));
+  const str = (v, n) => String(v || '').slice(0, n) || null;
   try {
     const r = db.prepare(`INSERT INTO election_candidates
       (name, party, is_independent, ticket_likelihood, win_likelihood, sentiment_score, sentiment_label,
        sentiment_summary, bio, current_activity, strategy, track_record, sources, confidence, manual, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)`)
-      .run(String(name).trim().slice(0, 80), String(party || '').slice(0, 60) || null,
-        /independent/i.test(String(party || '')) ? 1 : 0,
-        null, null, null, null, null, String(bio || '').slice(0, 400),
-        null, null, null, '[]', 'low', Date.now());
+      .run(String(b.name).trim().slice(0, 80), str(b.party, 60),
+        /independent/i.test(String(b.party || '')) ? 1 : 0,
+        pct(b.ticket_likelihood), pct(b.win_likelihood), snt(b.sentiment_score),
+        ['Positive', 'Mixed', 'Negative'].includes(b.sentiment_label) ? b.sentiment_label : null,
+        str(b.sentiment_summary, 400), str(b.bio, 400), str(b.current_activity, 400),
+        str(b.strategy, 400), str(b.track_record, 400),
+        JSON.stringify((Array.isArray(b.sources) ? b.sources : []).slice(0, 3)
+          .map((s) => ({ title: String(s.title || s.url || '').slice(0, 120), url: String(s.url || '') }))
+          .filter((s) => /^https?:\/\//.test(s.url))),
+        ['high', 'medium', 'low'].includes(b.confidence) ? b.confidence : 'low',
+        Date.now());
     res.json({ ok: true, id: Number(r.lastInsertRowid) });
   } catch (e) {
     res.status(400).json({ error: 'that candidate is already on the list' });
