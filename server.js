@@ -37,6 +37,7 @@ const WA_TOKEN = process.env.WHATSAPP_TOKEN || '';
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
 const APP_SECRET = process.env.WHATSAPP_APP_SECRET || '';
 const REP_NAME = process.env.REP_NAME || 'Arjun Deshpande';
+const CONSTITUENCY = process.env.CONSTITUENCY || 'Margao';
 const CONFIGURED = Boolean(WA_TOKEN && PHONE_NUMBER_ID);
 
 // ---------- dashboard password gate (politician portal) ----------
@@ -193,6 +194,47 @@ CREATE TABLE IF NOT EXISTS ai_chats (
   role TEXT NOT NULL,
   content TEXT NOT NULL,
   created_at INTEGER NOT NULL
+);
+`);
+// 2027 election intel: potential candidates for the constituency, researched
+// daily by the AI. Manual=1 rows were added by the politician and are never
+// removed by the research runs.
+db.exec(`
+CREATE TABLE IF NOT EXISTS election_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  party TEXT,
+  is_independent INTEGER DEFAULT 0,
+  ticket_likelihood INTEGER,
+  win_likelihood INTEGER,
+  sentiment_score INTEGER,
+  sentiment_label TEXT,
+  sentiment_summary TEXT,
+  bio TEXT,
+  current_activity TEXT,
+  strategy TEXT,
+  track_record TEXT,
+  sources TEXT,
+  confidence TEXT,
+  manual INTEGER DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_name ON election_candidates(lower(name));
+CREATE TABLE IF NOT EXISTS candidate_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  candidate_id INTEGER NOT NULL,
+  day TEXT NOT NULL,
+  sentiment_score INTEGER,
+  win_likelihood INTEGER,
+  ticket_likelihood INTEGER,
+  UNIQUE(candidate_id, day)
+);
+CREATE TABLE IF NOT EXISTS intel_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ran_at INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  candidate_count INTEGER,
+  note TEXT
 );
 `);
 // Backfill the citizens registry from tickets that predate it.
@@ -1061,6 +1103,117 @@ app.post('/api/admin/refresh-insights', express.json(), async (_req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---------- 2027 election intel ----------
+// Daily deep research on potential candidates for the constituency, with
+// sentiment analysis from news + social media. Research merges into
+// election_candidates (upsert by name, never auto-deletes); daily snapshots
+// feed the trend charts. Runs even when the AI is down — it just keeps the
+// last good data and logs a failed run.
+const ELECTION_YEAR = 2027;
+
+function upsertIntelSnapshot(candidateId, day, c) {
+  const ex = db.prepare('SELECT id FROM candidate_snapshots WHERE candidate_id=? AND day=?').get(candidateId, day);
+  if (ex) db.prepare('UPDATE candidate_snapshots SET sentiment_score=?, win_likelihood=?, ticket_likelihood=? WHERE id=?')
+    .run(c.sentiment_score, c.win_likelihood, c.ticket_likelihood, ex.id);
+  else db.prepare('INSERT INTO candidate_snapshots (candidate_id, day, sentiment_score, win_likelihood, ticket_likelihood) VALUES (?,?,?,?,?)')
+    .run(candidateId, day, c.sentiment_score, c.win_likelihood, c.ticket_likelihood);
+}
+
+async function refreshElectionIntel() {
+  console.log('[intel] starting election research…');
+  const intel = await ai.researchElectionIntel({ constituency: CONSTITUENCY });
+  const now = Date.now();
+  if (!intel || !intel.candidates.length) {
+    db.prepare('INSERT INTO intel_runs (ran_at, status, candidate_count, note) VALUES (?,?,?,?)')
+      .run(now, 'failed', 0, 'research returned nothing (AI unavailable?) — previous data kept');
+    console.error('[intel] research failed or empty — keeping previous data');
+    return { ok: false, error: 'research unavailable' };
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  let merged = 0;
+  for (const c of intel.candidates) {
+    const srcJson = JSON.stringify(c.sources || []);
+    const existing = db.prepare('SELECT id FROM election_candidates WHERE lower(name)=lower(?)').get(c.name);
+    if (existing) {
+      db.prepare(`UPDATE election_candidates SET party=?, is_independent=?, ticket_likelihood=?, win_likelihood=?,
+        sentiment_score=?, sentiment_label=?, sentiment_summary=?, bio=?, current_activity=?, strategy=?,
+        track_record=?, sources=?, confidence=?, updated_at=? WHERE id=?`)
+        .run(c.party || null, c.is_independent ? 1 : 0, c.ticket_likelihood, c.win_likelihood,
+          c.sentiment_score, c.sentiment_label, c.sentiment_summary, c.bio, c.current_activity, c.strategy,
+          c.track_record, srcJson, c.confidence, now, existing.id);
+      upsertIntelSnapshot(existing.id, day, c);
+    } else {
+      const r = db.prepare(`INSERT INTO election_candidates
+        (name, party, is_independent, ticket_likelihood, win_likelihood, sentiment_score, sentiment_label,
+         sentiment_summary, bio, current_activity, strategy, track_record, sources, confidence, manual, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`)
+        .run(c.name, c.party || null, c.is_independent ? 1 : 0, c.ticket_likelihood, c.win_likelihood,
+          c.sentiment_score, c.sentiment_label, c.sentiment_summary, c.bio, c.current_activity, c.strategy,
+          c.track_record, srcJson, c.confidence, now);
+      upsertIntelSnapshot(Number(r.lastInsertRowid), day, c);
+    }
+    merged++;
+  }
+  db.prepare('INSERT INTO intel_runs (ran_at, status, candidate_count, note) VALUES (?,?,?,?)')
+    .run(now, 'ok', merged, intel.race_summary || '');
+  console.log(`[intel] research complete: ${merged} candidates`);
+  return { ok: true, candidates: merged };
+}
+
+app.get('/api/election-intel', (req, res) => {
+  const candidates = db.prepare(`SELECT * FROM election_candidates ORDER BY COALESCE(win_likelihood, -1) DESC, name`).all()
+    .map((c) => { try { c.sources = JSON.parse(c.sources || '[]'); } catch { c.sources = []; } return c; });
+  let snapshots = [];
+  if (candidates.length) {
+    const since = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+    const ids = candidates.map((c) => c.id);
+    snapshots = db.prepare(`SELECT candidate_id, day, sentiment_score, win_likelihood, ticket_likelihood
+      FROM candidate_snapshots WHERE candidate_id IN (${ids.map(() => '?').join(',')}) AND day >= ? ORDER BY day`)
+      .all(...ids, since);
+  }
+  const lastRun = db.prepare("SELECT * FROM intel_runs WHERE status='ok' ORDER BY ran_at DESC LIMIT 1").get() || null;
+  const lastFail = db.prepare("SELECT * FROM intel_runs WHERE status='failed' ORDER BY ran_at DESC LIMIT 1").get() || null;
+  res.json({
+    candidates, snapshots,
+    last_run: lastRun, last_failed: lastFail && (!lastRun || lastFail.ran_at > lastRun.ran_at) ? lastFail : null,
+    race_summary: (lastRun && lastRun.note) || null,
+    election_year: ELECTION_YEAR, constituency: CONSTITUENCY,
+  });
+});
+
+// Manual refresh — starts the research in the background; the tab polls.
+app.post('/api/election-intel/refresh', express.json(), (_req, res) => {
+  refreshElectionIntel().catch((e) => console.error('manual intel refresh failed:', e.message));
+  res.json({ ok: true, started: true });
+});
+
+// Politician-added candidate: kept forever, never removed by research runs.
+app.post('/api/election-intel/candidates', express.json(), (req, res) => {
+  const { name, party, bio } = req.body || {};
+  if (!name || !String(name).trim()) return res.status(400).json({ error: 'name is required' });
+  try {
+    const r = db.prepare(`INSERT INTO election_candidates
+      (name, party, is_independent, ticket_likelihood, win_likelihood, sentiment_score, sentiment_label,
+       sentiment_summary, bio, current_activity, strategy, track_record, sources, confidence, manual, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)`)
+      .run(String(name).trim().slice(0, 80), String(party || '').slice(0, 60) || null,
+        /independent/i.test(String(party || '')) ? 1 : 0,
+        null, null, null, null, null, String(bio || '').slice(0, 400),
+        null, null, null, '[]', 'low', Date.now());
+    res.json({ ok: true, id: Number(r.lastInsertRowid) });
+  } catch (e) {
+    res.status(400).json({ error: 'that candidate is already on the list' });
+  }
+});
+
+app.delete('/api/election-intel/candidates/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ error: 'bad id' });
+  db.prepare('DELETE FROM candidate_snapshots WHERE candidate_id=?').run(id);
+  const r = db.prepare('DELETE FROM election_candidates WHERE id=?').run(id);
+  res.json({ ok: true, deleted: r.changes });
+});
+
 // Context bundle the AI assistant reasons over.
 function buildAssistantContext() {
   const month = Date.now() - 30 * 864e5;
@@ -1453,5 +1606,33 @@ function scheduleDailyInsights() {
   console.log(`Daily insights refresh scheduled for ${next.toLocaleString()}`);
 }
 scheduleDailyInsights();
+
+// Daily election intel: deep candidate research once a day at 07:00 local
+// (after the 06:00 insights run). Also kicks off in the background shortly
+// after startup when the last successful run is older than 24h.
+let intelRunning = false;
+function scheduleDailyElectionIntel() {
+  const run = () => {
+    if (intelRunning) return;
+    intelRunning = true;
+    refreshElectionIntel()
+      .catch((e) => console.error('daily intel refresh failed:', e.message))
+      .finally(() => { intelRunning = false; });
+  };
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(7, 0, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  setTimeout(() => { run(); setInterval(run, 24 * 3600e3); }, next - now);
+  console.log(`Daily election intel scheduled for ${next.toLocaleString()}`);
+  try {
+    const lastOk = db.prepare("SELECT MAX(ran_at) m FROM intel_runs WHERE status='ok'").get().m;
+    if (!lastOk || Date.now() - lastOk > 24 * 3600e3) {
+      setTimeout(run, 60e3);
+      console.log('Election intel stale or empty — first research run starts in 60s');
+    }
+  } catch (e) { console.error('intel cold-start check failed:', e.message); }
+}
+scheduleDailyElectionIntel();
 
 module.exports = { db, handleIncoming };

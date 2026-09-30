@@ -181,6 +181,7 @@
 </header>
 <nav class="tabs" id="tabs">
   <button data-tab="ask" class="active" onclick="showTab('ask')"><span class="tabmark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span>Ask Sampark</button>
+  <button data-tab="intel" onclick="showTab('intel')"><span class="tabmark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span>Election Intel</button>
   <button data-tab="overview" onclick="showTab('overview')">Overview</button>
   <button data-tab="tickets" onclick="showTab('tickets')">Tickets<span class="cnt" id="cntTickets"></span></button>
   <button data-tab="issues" onclick="showTab('issues')">Issues</button>
@@ -211,6 +212,33 @@
         <button class="sendbtn" onclick="askSend()" title="Send">↑</button>
       </div>
       <div class="fineprint">Sampark AI answers from live constituency data — ticket counts, areas, citizens and today's insights. It never invents numbers.</div>
+    </div>
+  </div>
+
+  <div class="tabpage" id="page-intel">
+    <div class="card"><h2>2027 Election Intel — Margao <span class="tag">deep research, refreshed daily by AI</span>
+      <span style="float:right"><button class="btn ghost" onclick="refreshIntel()">↻ Refresh now</button></span></h2>
+      <div id="intelMeta" style="font-size:12px;color:var(--muted);margin-bottom:10px"></div>
+      <div id="raceSummary" style="font-size:14px;line-height:1.6;margin-bottom:14px"></div>
+      <h3 style="margin:6px 0 8px">Trend — last 30 days
+        <span class="chips" style="display:inline-flex;margin:0 0 0 10px;vertical-align:middle">
+          <button class="chip" id="mWin" onclick="intelMetric='win';loadIntel()">Win likelihood</button>
+          <button class="chip" id="mSent" onclick="intelMetric='sentiment';loadIntel()">Sentiment</button>
+        </span></h3>
+      <canvas id="intelChart" style="width:100%;display:block"></canvas>
+      <div id="chartLegend" style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12.5px;color:var(--muted)"></div>
+    </div>
+    <div class="card"><h2>Potential candidates <span class="tag">ranked by likelihood to win</span></h2>
+      <div id="candList"><div class="empty">Loading…</div></div>
+    </div>
+    <div class="card"><h2 style="margin-bottom:4px">Add a candidate</h2>
+      <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">Your additions stay on the list permanently — the AI never removes them.</div>
+      <div class="row" style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="ncName" placeholder="Name *" style="flex:1;min-width:160px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:14px">
+        <input id="ncParty" placeholder="Party (or Independent)" style="flex:1;min-width:160px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:14px">
+        <input id="ncBio" placeholder="One-line bio (optional)" style="flex:2;min-width:200px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:14px">
+        <button class="btn primary" onclick="addCandidate()">Add</button>
+      </div>
     </div>
   </div>
 
@@ -327,6 +355,7 @@ function refreshTab(){
   else if(activeTab==='events') loadEvents();
   else if(activeTab==='citizens') loadCitizens();
   else if(activeTab==='insights') loadInsights(false);
+  else if(activeTab==='intel') loadIntel();
   else if(activeTab==='ask') loadAsk();
   else if(activeTab==='approvals') loadApprovals();
 }
@@ -458,6 +487,145 @@ async function loadCitizens(){
       <span class="pill ${c.onboarding_step==='done'?'p-resolved':'p-new'}">${c.onboarding_step==='done'?'registered':c.onboarding_step}</span>
     </div>`).join('') : '<div class="empty">No citizens found.</div>';
 }
+let intelMetric = 'win', intelLastRun = 0;
+const CHART_COLORS = ['#C05B2B','#2E5CA6','#20744A','#9D2B5E','#8F6414','#5B4BC4','#B3372B','#3E7C6B'];
+
+async function loadIntel(){
+  $('mWin').classList.toggle('active', intelMetric==='win');
+  $('mSent').classList.toggle('active', intelMetric==='sentiment');
+  let d;
+  try { d = await api('/api/election-intel'); }
+  catch(e){ $('candList').innerHTML = '<div class="empty">Could not load election intel.</div>'; return; }
+  const cands = d.candidates || [];
+  intelLastRun = (d.last_run && d.last_run.ran_at) || 0;
+  $('intelMeta').textContent = d.last_run
+    ? `Researched ${new Date(d.last_run.ran_at).toLocaleString()} · ${cands.length} potential candidates · refreshes daily at 7 AM`
+    : 'No research completed yet — click “Refresh now” to run the first deep research, or add a candidate manually below.';
+  $('raceSummary').innerHTML = d.race_summary ? `<b>The race so far:</b> ${esc(d.race_summary)}` : '';
+  drawIntelChart(cands, d.snapshots || []);
+  $('candList').innerHTML = cands.length ? cands.map((c, i) => candCard(c, i)).join('')
+    : '<div class="empty">No candidates yet.</div>';
+}
+
+function pctBar(label, pct){
+  if(pct == null) return '';
+  return `<div class="mixbar"><div class="n">${label}</div><div class="bar" style="width:${Math.max(4, pct*2.2)}px"></div><div class="c"><b>${pct}%</b></div></div>`;
+}
+function sentPill(c){
+  const cls = c.sentiment_label==='Positive' ? 'p-resolved' : c.sentiment_label==='Negative' ? 'pr-High' : 'p-new';
+  const sc = c.sentiment_score==null ? '' : ` (${c.sentiment_score>0?'+':''}${c.sentiment_score})`;
+  return `<span class="pill ${cls}">sentiment: ${esc(c.sentiment_label||'Mixed')}${sc}</span>`;
+}
+function candCard(c, i){
+  let srcs = [];
+  try { srcs = Array.isArray(c.sources) ? c.sources : JSON.parse(c.sources || '[]'); } catch(e){}
+  const partyPill = c.is_independent
+    ? '<span class="pill k-event">Independent</span>'
+    : (c.party ? `<span class="pill p-in_progress">${esc(c.party)}</span>` : '');
+  const confCls = c.confidence==='high' ? 'p-resolved' : c.confidence==='low' ? 'pr-High' : 'p-new';
+  const sec = (label, txt) => txt ? `<div style="margin-top:7px"><span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">${label}</span><div class="sum" style="margin-top:2px">${esc(txt)}</div></div>` : '';
+  return `<div class="insight">
+    <div class="rank">#${i+1}</div>
+    <div class="body" style="flex:1">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <b style="font-size:16px">${esc(c.name)}</b>
+        ${partyPill}
+        ${c.manual ? '<span class="pill p-new">your pick</span>' : `<span class="pill ${confCls}">${esc(c.confidence||'low')} confidence</span>`}
+        <span style="flex:1"></span>
+        <button class="btn ghost" style="padding:5px 12px;font-size:12px" onclick="deleteCandidate(${c.id}, '${esc(c.name).replace(/'/g, "\\'")}')">Remove</button>
+      </div>
+      <div style="margin-top:8px">${pctBar('Win likelihood', c.win_likelihood)}${pctBar('Party ticket', c.ticket_likelihood)}</div>
+      <div style="margin:6px 0">${sentPill(c)}${c.sentiment_summary ? ` <span style="font-size:13px;color:#4A463C">${esc(c.sentiment_summary)}</span>` : ''}</div>
+      ${sec('Bio', c.bio)}
+      ${sec('What they are doing now', c.current_activity)}
+      ${sec('Likely strategy', c.strategy)}
+      ${sec('Track record vs noise', c.track_record)}
+      ${srcs.length ? `<div style="margin-top:8px;font-size:12.5px">${srcs.map(s=>`<a href="${esc(s.url)}" target="_blank" rel="noopener" style="color:var(--terra-dark);margin-right:12px">↗ ${esc(s.title||'source')}</a>`).join('')}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function drawIntelChart(cands, snaps){
+  const cv = $('intelChart');
+  if(!cv) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.max(320, cv.parentElement.clientWidth - 44), H = 260;
+  cv.width = W*dpr; cv.height = H*dpr; cv.style.height = H+'px';
+  const ctx = cv.getContext('2d');
+  ctx.scale(dpr, dpr); ctx.clearRect(0, 0, W, H);
+  const padL = 46, padR = 14, padT = 14, padB = 30;
+  const byId = {};
+  snaps.forEach(s => { (byId[s.candidate_id] = byId[s.candidate_id] || []).push(s); });
+  const days = [...new Set(snaps.map(s => s.day))].sort();
+  const val = s => intelMetric === 'sentiment' ? s.sentiment_score : s.win_likelihood;
+  const lo = intelMetric === 'sentiment' ? -100 : 0, hi = 100;
+  ctx.font = '11px sans-serif';
+  if(!days.length){
+    ctx.fillStyle = '#7A746A';
+    ctx.fillText('No trend data yet — the first daily research run will populate this chart.', padL, H/2);
+    $('chartLegend').innerHTML = '';
+    return;
+  }
+  const X = i => padL + (days.length === 1 ? (W-padL-padR)/2 : i*(W-padL-padR)/(days.length-1));
+  const Y = v => padT + (1 - (v-lo)/(hi-lo))*(H-padT-padB);
+  ctx.strokeStyle = '#E8E2D2'; ctx.fillStyle = '#7A746A'; ctx.lineWidth = 1;
+  for(let g = 0; g <= 4; g++){
+    const v = lo + (hi-lo)*g/4, y = Y(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W-padR, y); ctx.stroke();
+    ctx.fillText(intelMetric === 'sentiment' && v > 0 ? '+'+v : ''+v, 8, y+4);
+  }
+  days.forEach((d, i) => {
+    if(days.length > 12 && i % Math.ceil(days.length/12)) return;
+    ctx.fillText(d.slice(5), X(i)-14, H-10);
+  });
+  cands.forEach((c, ci) => {
+    const pts = (byId[c.id] || []).filter(s => val(s) != null).sort((a, b) => a.day < b.day ? -1 : 1);
+    if(!pts.length) return;
+    const col = CHART_COLORS[ci % CHART_COLORS.length];
+    ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.beginPath();
+    pts.forEach((s, i) => {
+      const di = days.indexOf(s.day);
+      if(i === 0) ctx.moveTo(X(di), Y(val(s))); else ctx.lineTo(X(di), Y(val(s)));
+    });
+    ctx.stroke();
+    ctx.fillStyle = col;
+    pts.forEach(s => { const di = days.indexOf(s.day); ctx.beginPath(); ctx.arc(X(di), Y(val(s)), 3.5, 0, 7); ctx.fill(); });
+  });
+  $('chartLegend').innerHTML = cands.filter(c => (byId[c.id]||[]).length).map((c, ci) =>
+    `<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${CHART_COLORS[ci % CHART_COLORS.length]};margin-right:5px"></span>${esc(c.name)}</span>`
+  ).join('');
+}
+
+async function refreshIntel(){
+  toast('Deep research started — this takes a few minutes…');
+  try { await api('/api/election-intel/refresh', {method:'POST'}); }
+  catch(e){ toast('Refresh failed: '+e.message); return; }
+  const before = intelLastRun;
+  for(let i = 0; i < 10; i++){
+    await new Promise(r => setTimeout(r, 30000));
+    if(activeTab !== 'intel') return;
+    await loadIntel();
+    if(intelLastRun && intelLastRun !== before){ toast('Election intel updated'); return; }
+  }
+  toast('Still researching — check back in a few minutes');
+}
+
+async function addCandidate(){
+  const name = $('ncName').value.trim(), party = $('ncParty').value.trim(), bio = $('ncBio').value.trim();
+  if(!name){ toast('Name is required'); return; }
+  try {
+    await api('/api/election-intel/candidates', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, party, bio})});
+    $('ncName').value = ''; $('ncParty').value = ''; $('ncBio').value = '';
+    toast('Candidate added');
+    loadIntel();
+  } catch(e){ toast('Could not add: '+e.message); }
+}
+async function deleteCandidate(id, name){
+  if(!confirm('Remove '+name+' from election intel?')) return;
+  try { await api('/api/election-intel/candidates/'+id, {method:'DELETE'}); toast('Removed'); loadIntel(); }
+  catch(e){ toast('Delete failed: '+e.message); }
+}
+
 async function loadInsights(force){
   if(force) toast('Refreshing insights — AI is analyzing the last 30 days…');
   try {
