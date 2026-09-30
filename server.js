@@ -212,7 +212,11 @@ try {
 } catch (e) { console.error('citizen backfill failed:', e.message); }
 function nextTicketId() {
   const row = db.prepare("SELECT v FROM meta WHERE k='next_seq'").get();
-  const n = parseInt(row.v, 10);
+  let n = parseInt(row.v, 10) || 1;
+  // Defensive: never reuse a number even if the counter ever drifts behind the
+  // tickets table (e.g. across restores/seeds) — every issue gets a unique number.
+  const maxRow = db.prepare("SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) m FROM tickets WHERE id LIKE 'SKT-%'").get();
+  if (maxRow && maxRow.m >= n) n = maxRow.m + 1;
   db.prepare("UPDATE meta SET v=? WHERE k='next_seq'").run(String(n + 1));
   return 'SKT-' + String(n).padStart(4, '0');
 }
@@ -339,6 +343,14 @@ function extractTicketRef(text) {
   const m = String(text || '').match(/\bSKT-\d{4,}\b/i);
   return m ? m[0].toUpperCase() : null;
 }
+// Keyword fallback for new-issue triage when the AI is unavailable: explicit
+// "another issue" style markers mean a new ticket; everything else stays a
+// follow-up on the open ticket.
+function looksLikeNewIssue(text) {
+  const t = String(text || '');
+  return /\b(another|new|different|second|one more)\s+(issue|problem|complaint|matter|request)\b/i.test(t)
+      || (/^\s*also\b/i.test(t) && t.length > 25);
+}
 // Words that carry no meaning beyond "what's my ticket status?" — used to tell
 // a pure status check ("status of SKT-0042 please") apart from a follow-up that
 // quotes the ticket and adds new information.
@@ -464,6 +476,70 @@ async function replyTicketNotFound({ waId, refId, openTicket }) {
   catch (e) { console.error('ticket-not-found reply send failed:', e.message); }
 }
 
+// Open a brand-new ticket for the citizen's message and send/queue the first
+// reply. Used both for first contact AND when a known citizen reports a new,
+// separate issue while another ticket is still open — every issue gets its own
+// ticket number and its own row in the database.
+async function openNewTicket({ waId, citizen, name, text, ts, now, contextNote }) {
+  const id = nextTicketId();
+  let category = detectCategory(text);
+  let priority = detectPriority(text);
+  let language = null;
+  let kind = detectKind(text);
+  let sensitive = true; // fail closed: uncertain -> needs human approval
+  try {
+    const cls = await ai.classifyMessage(text); // null when no API key -> keyword fallback stands
+    if (cls) {
+      category = cls.category || category;
+      priority = cls.priority || priority;
+      language = cls.language || null;
+      kind = cls.kind || kind;
+      sensitive = cls.sensitive !== false;
+    } else {
+      sensitive = detectSensitive(text);
+    }
+  } catch (e) { console.error('AI classify failed, using keywords:', e.message); sensitive = detectSensitive(text); }
+  // New citizen (no name on record)? Ask for it — don't ask returning citizens again.
+  const isNewCitizen = !citizen.name || citizen.onboarding_step === 'name';
+  const awaitingName = isNewCitizen ? 1 : 0;
+  db.prepare(`INSERT INTO tickets (id, wa_id, citizen_name, category, priority, sensitive, kind, status, awaiting_name, pending_draft, draft_source, created_at, updated_at)
+              VALUES (?,?,?,?,?,?,?, 'new', ?, NULL, NULL, ?, ?)`)
+    .run(id, waId, citizen.name || name || null, category, priority, sensitive ? 1 : 0, kind, awaitingName, ts || now, now);
+  const ticket = db.prepare('SELECT * FROM tickets WHERE id=?').get(id);
+  const autoOn = autoReplyOn();
+  if (awaitingName) {
+    // First contact: the name request goes out AUTOMATICALLY as the office — no approval needed.
+    let askText = nameRequestDraft();
+    let src = 'template';
+    try {
+      const aiAsk = await ai.generateNameRequest({ repName: REP_NAME, language });
+      if (aiAsk) { askText = aiAsk; src = 'ai'; }
+    } catch (e) { console.error('AI name-request failed, using template:', e.message); }
+    askText += ticketRefLine(id); // every citizen gets their ticket number up front
+    const sent = autoOn && await tryAutoSend(ticket, askText, 'new');
+    if (!sent) {
+      db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, updated_at=? WHERE id=?').run(askText, src, Date.now(), id);
+      ticket.pending_draft = askText; ticket.draft_source = src;
+    }
+  } else {
+    // Known citizen: sensitive topics need approval; routine ones auto-reply as the office.
+    let draftText = generateDraft(ticket, text); // template fallback
+    let src = 'template';
+    try {
+      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text, kind, ticketId: id, contextNote });
+      if (aiDraft) { draftText = aiDraft; src = 'ai'; }
+    } catch (e) { console.error('AI draft failed, using template:', e.message); }
+    draftText += ticketRefLine(id); // every citizen gets their ticket number up front
+    const sent = !sensitive && autoOn && await tryAutoSend(ticket, draftText, 'in_progress');
+    if (sent) {
+      ticket.status = 'in_progress';
+    } else {
+      db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, updated_at=? WHERE id=?').run(draftText, src, Date.now(), id);
+      ticket.pending_draft = draftText; ticket.draft_source = src;
+    }
+  }
+  return { ticket, isNew: true };
+}
 async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, mediaPath }) {
   const now = Date.now();
   // A photo with no caption still needs classifiable text; the photo itself is stored on the message row.
@@ -494,64 +570,9 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
     citizen = db.prepare('SELECT * FROM citizens WHERE wa_id=?').get(waId);
   }
   if (!ticket) {
+    const opened = await openNewTicket({ waId, citizen, name, text, ts, now });
+    ticket = opened.ticket;
     isNew = true;
-    const id = nextTicketId();
-    let category = detectCategory(text);
-    let priority = detectPriority(text);
-    let language = null;
-    let kind = detectKind(text);
-    let sensitive = true; // fail closed: uncertain -> needs human approval
-    try {
-      const cls = await ai.classifyMessage(text); // null when no API key -> keyword fallback stands
-      if (cls) {
-        category = cls.category || category;
-        priority = cls.priority || priority;
-        language = cls.language || null;
-        kind = cls.kind || kind;
-        sensitive = cls.sensitive !== false;
-      } else {
-        sensitive = detectSensitive(text);
-      }
-    } catch (e) { console.error('AI classify failed, using keywords:', e.message); sensitive = detectSensitive(text); }
-    // New citizen (no name on record)? Ask for it — don't ask returning citizens again.
-    const isNewCitizen = !citizen.name || citizen.onboarding_step === 'name';
-    const awaitingName = isNewCitizen ? 1 : 0;
-    db.prepare(`INSERT INTO tickets (id, wa_id, citizen_name, category, priority, sensitive, kind, status, awaiting_name, pending_draft, draft_source, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?, 'new', ?, NULL, NULL, ?, ?)`)
-      .run(id, waId, citizen.name || name || null, category, priority, sensitive ? 1 : 0, kind, awaitingName, ts || now, now);
-    ticket = db.prepare('SELECT * FROM tickets WHERE id=?').get(id);
-    const autoOn = autoReplyOn();
-    if (awaitingName) {
-      // First contact: the name request goes out AUTOMATICALLY as the office — no approval needed.
-      let askText = nameRequestDraft();
-      let src = 'template';
-      try {
-        const aiAsk = await ai.generateNameRequest({ repName: REP_NAME, language });
-        if (aiAsk) { askText = aiAsk; src = 'ai'; }
-      } catch (e) { console.error('AI name-request failed, using template:', e.message); }
-      askText += ticketRefLine(id); // every citizen gets their ticket number up front
-      const sent = autoOn && await tryAutoSend(ticket, askText, 'new');
-      if (!sent) {
-        db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, updated_at=? WHERE id=?').run(askText, src, Date.now(), id);
-        ticket.pending_draft = askText; ticket.draft_source = src;
-      }
-    } else {
-      // Known citizen: sensitive topics need approval; routine ones auto-reply as the office.
-      let draftText = generateDraft(ticket, text); // template fallback
-      let src = 'template';
-      try {
-        const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text, kind, ticketId: id });
-        if (aiDraft) { draftText = aiDraft; src = 'ai'; }
-      } catch (e) { console.error('AI draft failed, using template:', e.message); }
-      draftText += ticketRefLine(id); // every citizen gets their ticket number up front
-      const sent = !sensitive && autoOn && await tryAutoSend(ticket, draftText, 'in_progress');
-      if (sent) {
-        ticket.status = 'in_progress';
-      } else {
-        db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, updated_at=? WHERE id=?').run(draftText, src, Date.now(), id);
-        ticket.pending_draft = draftText; ticket.draft_source = src;
-      }
-    }
   } else if (ticket.awaiting_name) {
     // Citizen answered the name request — try to capture their name.
     let captured = null;
@@ -649,7 +670,32 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
     ticket.draft_source = sent ? null : src;
     ticket.status = status;
   } else {
-    // Follow-up message on an existing ticket (e.g. a question about their issue):
+    // Existing open ticket. First decide: is this a NEW, separate issue (it gets
+    // its own ticket number and database row) or a follow-up on the open ticket?
+    // Ticket-number questions are always follow-ups — never split those.
+    const asksTicketNumber = /ticket\s*(number|id|no\.?|#)/i.test(text);
+    let newIssue = false;
+    if (!asksTicketNumber) {
+      const firstIn = db.prepare("SELECT body FROM messages WHERE ticket_id=? AND direction='in' ORDER BY created_at ASC LIMIT 1").get(ticket.id);
+      const recent = db.prepare("SELECT direction, body FROM messages WHERE ticket_id=? ORDER BY created_at DESC LIMIT 6").all(ticket.id).reverse();
+      const summary = `${ticket.id} [${ticket.category || 'general'}]: ${firstIn ? String(firstIn.body).slice(0, 200) : '(no description yet)'}`;
+      try {
+        const verdict = await ai.isNewIssue({ ticketSummary: summary, recentMessages: recent, text });
+        newIssue = verdict === null ? looksLikeNewIssue(text) : verdict; // null -> AI unavailable, use keyword fallback
+      } catch (e) { console.error('new-issue triage failed:', e.message); newIssue = looksLikeNewIssue(text); }
+    }
+    if (newIssue) {
+      // New issue -> brand-new ticket with its own number. The citizen keeps
+      // their identity; only the issue is split into its own database row.
+      console.log(`[${new Date().toISOString()}] NEW-ISSUE split from ${ticket.id}: opening separate ticket`);
+      const opened = await openNewTicket({
+        waId, citizen, name, text, ts, now,
+        contextNote: 'The citizen already has another open ticket — treat this message as a brand-new, separate request with its own ticket number.',
+      });
+      ticket = opened.ticket;
+      isNew = true;
+    } else {
+    // Follow-up message on the existing ticket (e.g. a question about their issue):
     // classify it, then auto-reply as the office for routine topics or queue for
     // approval when sensitive — never leave the citizen hanging.
     const status = ticket.status === 'awaiting_citizen' ? 'in_progress' : ticket.status;
@@ -666,15 +712,18 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
         sensitive = true;
       }
     } catch (e) { console.error('AI classify failed, using keywords:', e.message); if (detectSensitive(text)) sensitive = true; }
+    // Conversation history so the reply keeps context (e.g. the office asked for
+    // a reference number and the citizen just sent it).
+    const history = db.prepare("SELECT direction, body FROM messages WHERE ticket_id=? ORDER BY created_at DESC LIMIT 6").all(ticket.id).reverse();
     let draftText = generateDraft({ ...ticket, category }, text);
     let src = 'template';
     try {
-      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text, kind: ticket.kind, ticketId: ticket.id });
+      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text, kind: ticket.kind, ticketId: ticket.id, history });
       if (aiDraft) { draftText = aiDraft; src = 'ai'; }
     } catch (e) { console.error('AI draft failed, using template:', e.message); }
     // Citizen asking about their ticket number on an existing ticket: guarantee the
     // exact number is in the reply even if the draft didn't state it.
-    if (/ticket\s*(number|id|no\.?|#)/i.test(text)) draftText += ticketRefLine(ticket.id);
+    if (asksTicketNumber) draftText += ticketRefLine(ticket.id);
     const sent = !sensitive && autoReplyOn() && await tryAutoSend(ticket, draftText, status);
     db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, category=?, sensitive=?, updated_at=?, status=? WHERE id=?')
       .run(sent ? null : draftText, sent ? null : src, category, sensitive ? 1 : 0, now, status, ticket.id);
@@ -683,6 +732,7 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
     ticket.category = category;
     ticket.sensitive = sensitive ? 1 : 0;
     ticket.status = status;
+    }
   }
   db.prepare('INSERT INTO messages (ticket_id, direction, body, wa_message_id, media_type, media_path, created_at) VALUES (?,?,?,?,?,?,?)')
     .run(ticket.id, 'in', text, waMessageId || null, mediaType || null, mediaPath || null, ts || now);
@@ -1404,4 +1454,4 @@ function scheduleDailyInsights() {
 }
 scheduleDailyInsights();
 
-module.exports = { db };
+module.exports = { db, handleIncoming };
