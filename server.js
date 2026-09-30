@@ -131,6 +131,17 @@ try {
   db.prepare("UPDATE messages SET auto=0 WHERE auto=1 AND wa_message_id LIKE 'seed-%'").run();
   db.prepare("UPDATE messages SET created_at=? WHERE created_at>?").run(nowMs, nowMs);
 } catch (e) { console.error('auto-sent repair migration failed:', e.message); }
+// Politician-posted updates on a ticket; citizens are notified via WhatsApp.
+db.exec(`
+CREATE TABLE IF NOT EXISTS ticket_updates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id TEXT NOT NULL REFERENCES tickets(id),
+  body TEXT NOT NULL,
+  notified INTEGER DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_updates_ticket ON ticket_updates(ticket_id);
+`);
 // ---------- Sampark AI assistant: citizens registry, events, insights ----------
 // Citizens registry: everyone who ever messaged, with onboarding progress.
 db.exec(`
@@ -301,6 +312,45 @@ function generateDraft(ticket, text) {
   return T[ticket.category] || T.other;
 }
 
+// Ticket reference line: every new ticket's citizen gets their number up front
+// so they can quote it anytime to check the status.
+function ticketRefLine(ticketId) {
+  return `\n\n📋 Your ticket number is ${ticketId} — message it here anytime to check the status.`;
+}
+// Human-friendly category label shared by details questions and status replies.
+function categoryLabel(category) {
+  const labels = { streetlight: 'streetlight', water: 'water supply', road: 'road', ration: 'ration card', drainage: 'drainage', sanitation: 'garbage/sanitation', pension: 'pension', education: 'school/admission' };
+  return labels[category] || 'issue';
+}
+// Plain-language status for citizens.
+function statusPlainText(status) {
+  return { new: 'received and logged', in_progress: 'being worked on', awaiting_citizen: 'waiting for your reply', resolved: 'resolved' }[status] || status;
+}
+// Template fallback for a ticket-status reply (Claude drafts it when available).
+function statusReplyTemplate(ticket, latestUpdate) {
+  const first = (ticket.citizen_name || 'Citizen').split(' ')[0];
+  const cat = categoryLabel(ticket.category);
+  let s = `Namaste ${first} ji, ticket ${ticket.id} (${cat === 'issue' ? 'general' : cat}) is ${statusPlainText(ticket.status)}.`;
+  if (latestUpdate) s += ` Latest update from our office: ${latestUpdate}`;
+  return s + ` — Team ${REP_NAME}`;
+}
+// Extract a quoted ticket ID ("SKT-0042") from a citizen's message, if any.
+function extractTicketRef(text) {
+  const m = String(text || '').match(/\bSKT-\d{4,}\b/i);
+  return m ? m[0].toUpperCase() : null;
+}
+// Words that carry no meaning beyond "what's my ticket status?" — used to tell
+// a pure status check ("status of SKT-0042 please") apart from a follow-up that
+// quotes the ticket and adds new information.
+const STATUS_CHECK_WORDS = new Set('status check please pls track tracking update my ticket number no of for the a hi hello sir madam ji'.split(' '));
+function isStatusCheckOnly(text) {
+  const rest = String(text || '')
+    .replace(/\bSKT-\d{4,}\b/gi, ' ')
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .filter((w) => w && !STATUS_CHECK_WORDS.has(w));
+  return rest.length === 0;
+}
 // Details question for a newly registered citizen: issue location, or event
 // date/time + venue. Home address is always optional. Sent automatically.
 function detailsQuestionDraft(citizenName, kind, category) {
@@ -309,8 +359,7 @@ function detailsQuestionDraft(citizenName, kind, category) {
   if (kind === 'event') {
     return `Thanks ${first} ji! 🙏 When is the celebration and where should we come? Please share the date, time and venue. (You can also share your home address for our records — optional.) ${sign}`;
   }
-  const labels = { streetlight: 'streetlight', water: 'water supply', road: 'road', ration: 'ration card', drainage: 'drainage', sanitation: 'garbage/sanitation', pension: 'pension', education: 'school/admission' };
-  const label = labels[category] || 'issue';
+  const label = categoryLabel(category);
   return `Thanks ${first} ji! To help our office act faster, please share the exact location of this ${label} issue (area/landmark). (You can also share your home address for our records — optional.) ${sign}`;
 }
 // Capture structured details from the citizen's reply to the details question.
@@ -365,11 +414,77 @@ function detailsConfirmPrefix(citizenName, ticket, details) {
 function findOpenTicket(waId) {
   return db.prepare("SELECT * FROM tickets WHERE wa_id=? AND status != 'resolved' ORDER BY updated_at DESC LIMIT 1").get(waId);
 }
+// A citizen quoted their ticket number: answer with the ticket's status.
+// The reply is drafted by Claude (template fallback), logged on the ticket,
+// and sent directly — a status lookup is never left unanswered.
+async function replyTicketStatus({ ticket, waId, text, waMessageId, ts, now, mediaType, mediaPath }) {
+  const upd = db.prepare('SELECT body FROM ticket_updates WHERE ticket_id=? ORDER BY id DESC LIMIT 1').get(ticket.id);
+  let msg = statusReplyTemplate(ticket, upd?.body || null);
+  let src = 'template';
+  try {
+    const aiMsg = await ai.generateStatusReply({
+      repName: REP_NAME,
+      citizenName: ticket.citizen_name,
+      ticketId: ticket.id,
+      categoryLabel: categoryLabel(ticket.category),
+      statusPlain: statusPlainText(ticket.status),
+      latestUpdate: upd?.body || null,
+      citizenMessage: text,
+    });
+    if (aiMsg) { msg = aiMsg; src = 'ai'; }
+  } catch (e) { console.error('AI status reply failed, using template:', e.message); }
+  db.prepare('INSERT INTO messages (ticket_id, direction, body, wa_message_id, media_type, media_path, created_at) VALUES (?,?,?,?,?,?,?)')
+    .run(ticket.id, 'in', text, waMessageId || null, mediaType || null, mediaPath || null, ts || now);
+  let sent = false;
+  try {
+    const wa = await sendWhatsApp(waId, msg);
+    db.prepare('INSERT INTO messages (ticket_id, direction, body, wa_message_id, created_at) VALUES (?,?,?,?,?)')
+      .run(ticket.id, 'out', msg, wa.messages?.[0]?.id || null, Date.now());
+    sent = true;
+  } catch (e) { console.error('status reply send failed:', e.message); }
+  if (!sent) {
+    // WhatsApp unreachable: queue for the politician instead of going silent.
+    db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, updated_at=? WHERE id=?').run(msg, src, Date.now(), ticket.id);
+    ticket.pending_draft = msg; ticket.draft_source = src;
+  }
+  console.log(`[${new Date().toISOString()}] IN ${ticket.id} (${ticket.citizen_name}): status check -> ${sent ? 'sent' : 'queued'}`);
+  return { ticket, isNew: false };
+}
+// A citizen quoted a ticket number that isn't theirs (or doesn't exist).
+// Answered plainly, naming their actual open ticket when they have one.
+// No ticket is created — a bare number is not a new issue.
+async function replyTicketNotFound({ waId, refId, openTicket }) {
+  let msg;
+  if (openTicket) {
+    msg = `Namaste 🙏 I couldn't find ticket ${refId} on this number. Your open ticket is ${openTicket.id} (${categoryLabel(openTicket.category)}) — it is ${statusPlainText(openTicket.status)}. — Team ${REP_NAME}`;
+  } else {
+    msg = `Namaste 🙏 I couldn't find ticket ${refId} on this number. Please check the number and try again, or describe your issue and we'll register it. — Team ${REP_NAME}`;
+  }
+  try { await sendWhatsApp(waId, msg); }
+  catch (e) { console.error('ticket-not-found reply send failed:', e.message); }
+}
+
 async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, mediaPath }) {
   const now = Date.now();
   // A photo with no caption still needs classifiable text; the photo itself is stored on the message row.
   if (mediaPath && !text) text = '[photo shared]';
   let ticket = findOpenTicket(waId);
+  // Ticket-number status check: a citizen quoting "SKT-0042" gets that
+  // ticket's status — but only ever from the sender's OWN ticket.
+  const refId = extractTicketRef(text);
+  if (refId) {
+    const refTicket = db.prepare('SELECT * FROM tickets WHERE id=? AND wa_id=?').get(refId, waId);
+    if (refTicket) {
+      if (isStatusCheckOnly(text) || refTicket.status === 'resolved') {
+        return await replyTicketStatus({ ticket: refTicket, waId, text, waMessageId, ts, now, mediaType, mediaPath });
+      }
+      ticket = refTicket; // follow-up quoting the ticket: route it to that ticket
+    } else if (isStatusCheckOnly(text)) {
+      await replyTicketNotFound({ waId, refId, openTicket: ticket });
+      return { ticket, isNew: false };
+    }
+    // Unknown number + other content: fall through to the normal flow.
+  }
   let isNew = false;
   // Citizens registry: every wa_id gets a row; first-time citizens onboard (name -> details).
   let citizen = db.prepare('SELECT * FROM citizens WHERE wa_id=?').get(waId);
@@ -414,6 +529,7 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
         const aiAsk = await ai.generateNameRequest({ repName: REP_NAME, language });
         if (aiAsk) { askText = aiAsk; src = 'ai'; }
       } catch (e) { console.error('AI name-request failed, using template:', e.message); }
+      askText += ticketRefLine(id); // every citizen gets their ticket number up front
       const sent = autoOn && await tryAutoSend(ticket, askText, 'new');
       if (!sent) {
         db.prepare('UPDATE tickets SET pending_draft=?, draft_source=?, updated_at=? WHERE id=?').run(askText, src, Date.now(), id);
@@ -427,6 +543,7 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
         const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text, kind });
         if (aiDraft) { draftText = aiDraft; src = 'ai'; }
       } catch (e) { console.error('AI draft failed, using template:', e.message); }
+      draftText += ticketRefLine(id); // every citizen gets their ticket number up front
       const sent = !sensitive && autoOn && await tryAutoSend(ticket, draftText, 'in_progress');
       if (sent) {
         ticket.status = 'in_progress';
@@ -455,6 +572,7 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
         const aiQ = await ai.generateDetailsQuestion({ repName: REP_NAME, citizenName: captured, kind: ticket.kind, category: ticket.category, citizenMessage: text });
         if (aiQ) { q = aiQ; qSrc = 'ai'; }
       } catch (e) { console.error('AI details-question failed, using template:', e.message); }
+      q += ticketRefLine(ticket.id); // citizen gets their ticket number with the first substantive reply
       const sent = autoReplyOn() && await tryAutoSend(ticket, q, status);
       db.prepare('UPDATE tickets SET citizen_name=?, awaiting_name=0, pending_draft=?, draft_source=?, status=?, updated_at=? WHERE id=?')
         .run(captured, sent ? null : q, sent ? null : qSrc, status, now, ticket.id);
@@ -472,6 +590,7 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
           const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category: ticket.category, language: null, text });
           if (aiDraft) { draftText = aiDraft; src = 'ai'; }
         } catch (e) { console.error('AI draft failed, using template:', e.message); }
+        draftText += ticketRefLine(ticket.id); // citizen gets their ticket number with the first substantive reply
         const sent = !ticket.sensitive && autoReplyOn() && await tryAutoSend(ticket, draftText, status);
         db.prepare('UPDATE tickets SET awaiting_name=0, pending_draft=?, draft_source=?, status=?, updated_at=? WHERE id=?')
           .run(sent ? null : draftText, sent ? null : src, status, now, ticket.id);
@@ -1063,7 +1182,8 @@ app.get('/api/tickets/:id', (req, res) => {
   const t = db.prepare('SELECT * FROM tickets WHERE id=?').get(req.params.id);
   if (!t) return res.status(404).json({ error: 'not found' });
   const msgs = db.prepare('SELECT * FROM messages WHERE ticket_id=? ORDER BY id ASC').all(t.id);
-  res.json({ ...t, messages: msgs });
+  const updates = db.prepare('SELECT * FROM ticket_updates WHERE ticket_id=? ORDER BY id ASC').all(t.id);
+  res.json({ ...t, messages: msgs, updates });
 });
 
 // Save / override the AI draft
@@ -1132,6 +1252,47 @@ app.post('/api/tickets/:id/status', express.json(), (req, res) => {
   if (!['new', 'in_progress', 'awaiting_citizen', 'resolved'].includes(status)) return res.status(400).json({ error: 'bad status' });
   db.prepare('UPDATE tickets SET status=?, updated_at=? WHERE id=?').run(status, Date.now(), req.params.id);
   res.json({ ok: true });
+});
+
+// Politician posts an update on a ticket. It is recorded and the citizen is
+// notified via WhatsApp right away. If the send fails, the update is kept
+// (notified=0) so the politician can retry from the dashboard.
+app.post('/api/tickets/:id/updates', express.json(), async (req, res) => {
+  const t = db.prepare('SELECT * FROM tickets WHERE id=?').get(req.params.id);
+  if (!t) return res.status(404).json({ error: 'not found' });
+  const body = String(req.body.body || '').trim().slice(0, 1000);
+  if (!body) return res.status(400).json({ error: 'empty update' });
+  const now = Date.now();
+  const info = db.prepare('INSERT INTO ticket_updates (ticket_id, body, notified, created_at) VALUES (?,?,0,?)').run(t.id, body, now);
+  const uid = info.lastInsertRowid;
+  const msg = `📋 Update on your ticket ${t.id}:\n\n${body}\n\n— Team ${REP_NAME}`;
+  let notified = false;
+  try {
+    const wa = await sendWhatsApp(t.wa_id, msg);
+    db.prepare('INSERT INTO messages (ticket_id, direction, body, wa_message_id, created_at) VALUES (?,?,?,?,?)')
+      .run(t.id, 'out', msg, wa.messages?.[0]?.id || null, now);
+    db.prepare('UPDATE ticket_updates SET notified=1 WHERE id=?').run(uid);
+    notified = true;
+  } catch (e) { console.error('update notify failed:', e.message); }
+  if (t.status !== 'resolved') db.prepare("UPDATE tickets SET status='in_progress', updated_at=? WHERE id=?").run(now, t.id);
+  res.json({ ok: true, id: uid, notified });
+});
+
+// Retry notifying the citizen about an update whose WhatsApp send failed.
+app.post('/api/tickets/:id/updates/:uid/notify', express.json(), async (req, res) => {
+  const t = db.prepare('SELECT * FROM tickets WHERE id=?').get(req.params.id);
+  const u = db.prepare('SELECT * FROM ticket_updates WHERE id=? AND ticket_id=?').get(req.params.uid, req.params.id);
+  if (!t || !u) return res.status(404).json({ error: 'not found' });
+  const msg = `📋 Update on your ticket ${t.id}:\n\n${u.body}\n\n— Team ${REP_NAME}`;
+  try {
+    const wa = await sendWhatsApp(t.wa_id, msg);
+    db.prepare('INSERT INTO messages (ticket_id, direction, body, wa_message_id, created_at) VALUES (?,?,?,?,?)')
+      .run(t.id, 'out', msg, wa.messages?.[0]?.id || null, Date.now());
+    db.prepare('UPDATE ticket_updates SET notified=1 WHERE id=?').run(u.id);
+    res.json({ ok: true, notified: true });
+  } catch (e) {
+    res.status(502).json({ error: e.message, notified: false });
+  }
 });
 
 // Auto-reply master switch (dashboard toggle). Persists in meta; default on.
@@ -1214,7 +1375,7 @@ app.post('/api/test/simulate', express.json(), async (req, res) => {
   }
   try {
     const r = await handleIncoming({ waId: String(from), name: name || 'Test Citizen', text, waMessageId: 'test-' + Date.now(), ts: Date.now(), mediaType: mediaPath ? 'image' : null, mediaPath });
-    res.json({ ok: true, ticket_id: r.ticket.id, is_new: r.isNew, draft_source: r.ticket.draft_source });
+    res.json({ ok: true, ticket_id: r.ticket ? r.ticket.id : null, is_new: r.isNew, draft_source: r.ticket ? r.ticket.draft_source : null });
   } catch (e) {
     console.error('simulate error:', e.message);
     res.status(500).json({ error: e.message });

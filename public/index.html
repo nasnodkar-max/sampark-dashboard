@@ -147,6 +147,9 @@
   .bub.in{background:#fff;align-self:flex-start;border:1px solid var(--line);border-bottom-left-radius:4px}
   .bub.out{background:#EDE4CB;align-self:flex-end;border-bottom-right-radius:4px}
   .bub .t{display:block;font-size:10px;color:var(--muted);margin-top:4px;text-align:right}
+  .upd{background:#F3EFE3;border:1px dashed #C9BFA4;border-radius:10px;padding:8px 12px;font-size:13px;line-height:1.45;margin-bottom:6px}
+  .upd .t{display:block;font-size:10px;color:var(--muted);margin-top:4px}
+  .upd .t a{color:var(--accent);cursor:pointer}
   .msgimg{max-width:230px;max-height:230px;border-radius:10px;display:block;margin:2px 0 6px;cursor:zoom-in;object-fit:cover}
   .photoprev img{max-width:120px;max-height:120px;border-radius:8px;display:block;margin-bottom:6px}
   .photoprev button{background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;padding:0;margin-bottom:6px}
@@ -275,7 +278,10 @@
   <div class="dhead"><b id="dTitle">Ticket</b><button onclick="closeDrawer()">×</button></div>
   <div class="thread" id="dThread"></div>
   <div class="dfoot">
-    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">AI DRAFT — edit before approving</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">📋 Ticket updates — the citizen is notified on WhatsApp</div>
+    <div id="dUpdates" style="margin-bottom:6px"></div>
+    <div class="row"><input id="dUpdateInput" placeholder="Post an update for the citizen…" style="flex:1;border:1px solid #d1d5db;border-radius:8px;padding:9px 12px;font-size:14px"><button class="btn primary" onclick="postUpdate()">Post &amp; notify</button></div>
+    <div style="font-size:12px;color:var(--muted);margin:10px 0 6px">AI DRAFT — edit before approving</div>
     <textarea id="dDraft"></textarea>
     <div class="row">
       <button class="btn primary" onclick="approveCurrent()">Approve &amp; send</button>
@@ -538,6 +544,11 @@ async function openTicket(id){
   }).join('');
   $('dDraft').value = cur.pending_draft || '';
   $('dCustom').value = '';
+  $('dUpdateInput').value = '';
+  const ups = cur.updates || [];
+  $('dUpdates').innerHTML = ups.length ? ups.map(u =>
+    `<div class="upd">${esc(u.body)}<span class="t">${new Date(u.created_at).toLocaleString()}${u.notified ? ' · notified ✓' : ' · <a onclick="retryNotify(' + u.id + ')">not sent — retry</a>'}</span></div>`
+  ).join('') : '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">No updates yet.</div>';
   resetPhoto();
   $('drawer').classList.add('open');
   $('dThread').scrollTop = $('dThread').scrollHeight;
@@ -596,6 +607,20 @@ async function setStatus(s){
   if(!cur) return;
   await api('/api/tickets/'+cur.id+'/status', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({status:s})});
   toast('Marked: '+statusLabel(s)); openTicket(cur.id); refreshHeader(); refreshTab();
+}
+async function postUpdate(){
+  if(!cur) return; const v=$('dUpdateInput').value.trim(); if(!v) return;
+  try {
+    const r = await api('/api/tickets/'+cur.id+'/updates', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({body:v})});
+    toast(r.notified ? 'Update posted — citizen notified' : 'Update saved — WhatsApp send failed, use retry in the list');
+  } catch(e){ toast('Failed: '+e.message); }
+  openTicket(cur.id); refreshHeader(); refreshTab();
+}
+async function retryNotify(uid){
+  if(!cur) return;
+  try { await api('/api/tickets/'+cur.id+'/updates/'+uid+'/notify', {method:'POST'}); toast('Citizen notified'); }
+  catch(e){ toast('Send failed: '+e.message); }
+  openTicket(cur.id);
 }
 async function simulate(){
   const from=$('simFrom').value.trim(), name=$('simName').value.trim(), text=$('simText').value.trim();
