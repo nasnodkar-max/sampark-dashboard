@@ -283,6 +283,11 @@
         <textarea id="ncStrategy" rows="2" placeholder="Likely 2027 strategy" style="width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px"></textarea>
         <textarea id="ncTrack" rows="2" placeholder="Track record vs noise (real groundwork or mostly online?)" style="width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px"></textarea>
         <textarea id="ncSources" rows="2" placeholder="Sources — one per line: Title | https://…" style="width:100%;margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px"></textarea>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:8px">
+          <input id="ncFB" placeholder="Facebook profile ID or page URL (optional)" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px">
+          <input id="ncIG" placeholder="Instagram username (optional)" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px">
+          <input id="ncLI" placeholder="LinkedIn profile URL (optional)" style="border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px">
+        </div>
       </details>
     </div>
   </div>
@@ -550,6 +555,7 @@ async function loadIntel(){
   drawIntelChart(cands, d.snapshots || []);
   $('candList').innerHTML = cands.length ? cands.map((c, i) => candCard(c, i)).join('')
     : '<div class="empty">No candidates yet.</div>';
+  cands.forEach(c => loadSocPosts(c.id));
 }
 
 function pctBar(label, pct){
@@ -585,6 +591,26 @@ function candCard(c, i){
       ${sec('What they are doing now', c.current_activity)}
       ${sec('Likely strategy', c.strategy)}
       ${sec('Track record vs noise', c.track_record)}
+      <div style="margin-top:10px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Social pulse</span>
+          ${c.facebook_handle ? `<a href="${esc(fbUrl(c.facebook_handle))}" target="_blank" rel="noopener" style="font-size:12px;color:var(--terra-dark)">Facebook ↗</a>` : ''}
+          ${c.instagram_handle ? `<a href="https://www.instagram.com/${esc(String(c.instagram_handle).replace(/^@/,'').split('/').pop())}/" target="_blank" rel="noopener" style="font-size:12px;color:var(--terra-dark)">Instagram ↗</a>` : ''}
+          ${c.linkedin_url ? `<a href="${esc(c.linkedin_url)}" target="_blank" rel="noopener" style="font-size:12px;color:var(--terra-dark)">LinkedIn ↗</a>` : ''}
+          <button class="btn ghost" style="padding:3px 10px;font-size:11.5px" onclick="toggleSocEdit(${c.id})">✎ handles</button>
+        </div>
+        <div id="socedit-${c.id}" style="display:none;margin-top:6px;gap:6px;flex-wrap:wrap">
+          <input id="socfb-${c.id}" placeholder="Facebook profile ID or page URL" value="${esc(c.facebook_handle||'')}" style="flex:1;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px">
+          <input id="socig-${c.id}" placeholder="Instagram username" value="${esc(c.instagram_handle||'')}" style="flex:1;min-width:130px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px">
+          <input id="socli-${c.id}" placeholder="LinkedIn profile URL" value="${esc(c.linkedin_url||'')}" style="flex:1;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px">
+          <button class="btn primary" style="padding:7px 14px;font-size:12.5px" onclick="saveSocHandles(${c.id})">Save</button>
+        </div>
+        <div class="chips" style="margin:8px 0 6px" id="soctabs-${c.id}">
+          <button class="chip active" data-plat="facebook" onclick="socSwitch(${c.id},'facebook')">Facebook</button>
+          <button class="chip" data-plat="instagram" onclick="socSwitch(${c.id},'instagram')">Instagram</button>
+        </div>
+        <div id="socposts-${c.id}" style="font-size:13px"><span style="color:var(--muted)">Loading recent posts…</span></div>
+      </div>
       ${srcs.length ? `<div style="margin-top:8px;font-size:12.5px">${srcs.map(s=>`<a href="${esc(s.url)}" target="_blank" rel="noopener" style="color:var(--terra-dark);margin-right:12px">↗ ${esc(s.title||'source')}</a>`).join('')}</div>` : ''}
     </div>
   </div>`;
@@ -669,11 +695,12 @@ async function addCandidate(){
     win_likelihood: v('ncWin'), sentiment_score: v('ncSent'),
     sentiment_label: v('ncSentLabel') || null, confidence: v('ncConf') || 'low',
     sentiment_summary: v('ncSentSum'), current_activity: v('ncActivity'),
-    strategy: v('ncStrategy'), track_record: v('ncTrack'), sources
+    strategy: v('ncStrategy'), track_record: v('ncTrack'), sources,
+    facebook_handle: v('ncFB'), instagram_handle: v('ncIG'), linkedin_url: v('ncLI')
   };
   try {
     await api('/api/election-intel/candidates', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-    ['ncName','ncParty','ncBio','ncWin','ncSent','ncSentLabel','ncSentSum','ncActivity','ncStrategy','ncTrack','ncSources'].forEach(id => $(id).value = '');
+    ['ncName','ncParty','ncBio','ncWin','ncSent','ncSentLabel','ncSentSum','ncActivity','ncStrategy','ncTrack','ncSources','ncFB','ncIG','ncLI'].forEach(id => $(id).value = '');
     $('ncConf').value = 'low';
     toast('Candidate added');
     loadIntel();
@@ -683,6 +710,59 @@ async function deleteCandidate(id, name){
   if(!confirm('Remove '+name+' from election intel?')) return;
   try { await api('/api/election-intel/candidates/'+id, {method:'DELETE'}); toast('Removed'); loadIntel(); }
   catch(e){ toast('Delete failed: '+e.message); }
+}
+
+// ---- Social pulse: recent Facebook / Instagram posts per candidate ----
+function fbUrl(h){
+  h = String(h||'').trim();
+  if(/^https?:\/\//i.test(h)) return h;
+  return 'https://www.facebook.com/' + h.replace(/^@/, '');
+}
+const socCache = {};
+function socSwitch(id, plat){
+  document.querySelectorAll(`#soctabs-${id} .chip`).forEach(b=>b.classList.toggle('active', b.dataset.plat===plat));
+  renderSocPosts(id, plat);
+}
+async function loadSocPosts(id){
+  try {
+    socCache[id] = await api('/api/election-intel/candidates/'+id+'/posts');
+  } catch(e){ socCache[id] = { facebook: [], instagram: [], fetched_at: 0, error: true }; }
+  renderSocPosts(id, 'facebook');
+}
+function socDate(ts){ return ts ? new Date(ts).toLocaleDateString('en-IN',{day:'numeric',month:'short'}) : ''; }
+function renderSocPosts(id, plat){
+  const box = $('socposts-'+id);
+  if(!box) return;
+  const d = socCache[id];
+  if(!d){ box.innerHTML = '<span style="color:var(--muted)">Loading recent posts…</span>'; return; }
+  const list = (d[plat] || []);
+  const upd = d.fetched_at ? ` <span style="color:var(--muted);font-size:11.5px">· updated ${new Date(d.fetched_at).toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</span>` : '';
+  if(d.error){ box.innerHTML = '<span style="color:var(--muted)">Could not load posts.</span>'; return; }
+  if(!list.length){
+    box.innerHTML = `<span style="color:var(--muted)">No ${plat} posts tracked yet — add the candidate's handle above${upd}.</span>`;
+    return;
+  }
+  box.innerHTML = list.map(p=>`
+    <div style="padding:7px 0;border-top:1px solid var(--line)">
+      <a href="${esc(p.post_url)}" target="_blank" rel="noopener" style="color:var(--terra-dark);font-size:12.5px;font-weight:600">${socDate(p.posted_at)||'Recent'} ↗</a>${upd}
+      <div style="font-size:13px;color:#4A463C;margin-top:2px">${esc((p.caption||'').slice(0,220))}${(p.caption||'').length>220?'…':''}</div>
+    </div>`).join('');
+}
+function toggleSocEdit(id){
+  const el = $('socedit-'+id);
+  el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+}
+async function saveSocHandles(id){
+  const payload = {
+    facebook_handle: $('socfb-'+id).value.trim(),
+    instagram_handle: $('socig-'+id).value.trim(),
+    linkedin_url: $('socli-'+id).value.trim()
+  };
+  try {
+    await api('/api/election-intel/candidates/'+id+'/social', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    toast('Social handles saved — posts refresh daily');
+    loadIntel();
+  } catch(e){ toast('Save failed: '+e.message); }
 }
 
 async function loadInsights(force){

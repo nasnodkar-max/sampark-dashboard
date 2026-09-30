@@ -66,6 +66,14 @@ function isAuthed(req) {
 }
 function requireAuth(req, res, next) {
   if (isAuthed(req)) return next();
+  // Agent sync token: lets the VM-side refresh job POST social posts without
+  // the dashboard password. Only active when SYNC_TOKEN is set on the host.
+  const st = process.env.SYNC_TOKEN;
+  if (st) {
+    const got = Buffer.from(String(req.get('x-sync-token') || ''));
+    const want = Buffer.from(st);
+    if (got.length === want.length && crypto.timingSafeEqual(got, want)) return next();
+  }
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'login required' });
   return res.redirect('/login');
 }
@@ -238,6 +246,23 @@ CREATE TABLE IF NOT EXISTS election_candidates (
   updated_at INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_candidates_name ON election_candidates(lower(name));
+`);
+// Candidate social handles + cached recent posts (fetched by the agent via
+// connected Instagram/Facebook CLIs; Render cannot run those CLIs itself).
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN facebook_handle TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN instagram_handle TEXT'); } catch (e) {}
+try { db.exec('ALTER TABLE election_candidates ADD COLUMN linkedin_url TEXT'); } catch (e) {}
+db.exec(`CREATE TABLE IF NOT EXISTS candidate_social_posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  candidate_id INTEGER NOT NULL,
+  platform TEXT NOT NULL,
+  post_url TEXT NOT NULL,
+  caption TEXT,
+  posted_at INTEGER,
+  fetched_at INTEGER NOT NULL,
+  UNIQUE(candidate_id, platform, post_url)
+);`);
+db.exec(`
 CREATE TABLE IF NOT EXISTS candidate_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   candidate_id INTEGER NOT NULL,
@@ -1217,8 +1242,9 @@ app.post('/api/election-intel/candidates', express.json(), (req, res) => {
   try {
     const r = db.prepare(`INSERT INTO election_candidates
       (name, party, is_independent, ticket_likelihood, win_likelihood, sentiment_score, sentiment_label,
-       sentiment_summary, bio, current_activity, strategy, track_record, sources, confidence, manual, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)`)
+       sentiment_summary, bio, current_activity, strategy, track_record, sources, confidence, manual, updated_at,
+       facebook_handle, instagram_handle, linkedin_url)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)`)
       .run(String(b.name).trim().slice(0, 80), str(b.party, 60),
         /independent/i.test(String(b.party || '')) ? 1 : 0,
         pct(b.ticket_likelihood), pct(b.win_likelihood), snt(b.sentiment_score),
@@ -1229,7 +1255,7 @@ app.post('/api/election-intel/candidates', express.json(), (req, res) => {
           .map((s) => ({ title: String(s.title || s.url || '').slice(0, 120), url: String(s.url || '') }))
           .filter((s) => /^https?:\/\//.test(s.url))),
         ['high', 'medium', 'low'].includes(b.confidence) ? b.confidence : 'low',
-        Date.now());
+        Date.now(), str(b.facebook_handle, 160), str(b.instagram_handle, 80), str(b.linkedin_url, 300));
     res.json({ ok: true, id: Number(r.lastInsertRowid) });
   } catch (e) {
     res.status(400).json({ error: 'that candidate is already on the list' });
@@ -1240,8 +1266,77 @@ app.delete('/api/election-intel/candidates/:id', (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ error: 'bad id' });
   db.prepare('DELETE FROM candidate_snapshots WHERE candidate_id=?').run(id);
+  db.prepare('DELETE FROM candidate_social_posts WHERE candidate_id=?').run(id);
   const r = db.prepare('DELETE FROM election_candidates WHERE id=?').run(id);
   res.json({ ok: true, deleted: r.changes });
+});
+
+// Update a candidate's social handles (Facebook profile ID or page URL,
+// Instagram username, LinkedIn profile URL).
+app.put('/api/election-intel/candidates/:id/social', express.json(), (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ error: 'bad id' });
+  const b = req.body || {};
+  const str = (v, n) => String(v || '').trim().slice(0, n) || null;
+  const r = db.prepare(`UPDATE election_candidates
+    SET facebook_handle=?, instagram_handle=?, linkedin_url=?, updated_at=?
+    WHERE id=?`).run(str(b.facebook_handle, 160), str(b.instagram_handle, 80),
+      str(b.linkedin_url, 300), Date.now(), id);
+  if (!r.changes) return res.status(404).json({ error: 'candidate not found' });
+  res.json({ ok: true });
+});
+
+// Recent social posts for one candidate (newest first, up to 6 per platform).
+app.get('/api/election-intel/candidates/:id/posts', (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ error: 'bad id' });
+  const rows = db.prepare(`SELECT platform, post_url, caption, posted_at, fetched_at
+    FROM candidate_social_posts WHERE candidate_id=? ORDER BY COALESCE(posted_at, 0) DESC`).all(id);
+  const out = { facebook: [], instagram: [] };
+  for (const p of rows) {
+    if (!out[p.platform]) continue;
+    if (out[p.platform].length < 6) out[p.platform].push(p);
+  }
+  const fetched = rows.length ? Math.max(...rows.map((p) => p.fetched_at)) : 0;
+  res.json({ ...out, fetched_at: fetched });
+});
+
+// Bulk upsert of fetched posts (used by the agent's refresh job — the host
+// cannot run the Instagram/Facebook CLIs itself).
+app.post('/api/election-intel/candidates/:id/posts', express.json(), (req, res) => {
+  const id = Number(req.params.id);
+  const b = req.body || {};
+  if (!id) return res.status(400).json({ error: 'bad id' });
+  const platform = ['facebook', 'instagram'].includes(b.platform) ? b.platform : null;
+  if (!platform || !Array.isArray(b.posts)) return res.status(400).json({ error: 'platform and posts[] required' });
+  const exists = db.prepare('SELECT id FROM election_candidates WHERE id=?').get(id);
+  if (!exists) return res.status(404).json({ error: 'candidate not found' });
+  const now = Date.now();
+  const upsert = db.prepare(`INSERT INTO candidate_social_posts
+    (candidate_id, platform, post_url, caption, posted_at, fetched_at)
+    VALUES (?,?,?,?,?,?)
+    ON CONFLICT(candidate_id, platform, post_url)
+    DO UPDATE SET caption=excluded.caption, posted_at=excluded.posted_at, fetched_at=excluded.fetched_at`);
+  const txn = db.transaction((posts) => {
+    for (const p of posts.slice(0, 12)) {
+      const url = String(p.post_url || '').trim().slice(0, 500);
+      if (!/^https?:\/\//.test(url)) continue;
+      upsert.run(id, platform, url, String(p.caption || '').slice(0, 600),
+        Number(p.posted_at) > 0 ? Number(p.posted_at) : null, now);
+    }
+    // Keep only the 12 newest per platform.
+    db.prepare(`DELETE FROM candidate_social_posts WHERE candidate_id=? AND platform=?
+      AND id NOT IN (SELECT id FROM candidate_social_posts
+        WHERE candidate_id=? AND platform=? ORDER BY COALESCE(posted_at,0) DESC LIMIT 12)`)
+      .run(id, platform, id, platform);
+  });
+  txn(b.posts);
+  if (b.handle) {
+    const col = platform === 'facebook' ? 'facebook_handle' : 'instagram_handle';
+    db.prepare(`UPDATE election_candidates SET ${col}=?, updated_at=? WHERE id=?`)
+      .run(String(b.handle).trim().slice(0, 160), now, id);
+  }
+  res.json({ ok: true });
 });
 
 // Context bundle the AI assistant reasons over.
