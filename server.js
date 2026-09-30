@@ -1295,32 +1295,36 @@ async function refreshElectionIntel() {
   const day = new Date().toISOString().slice(0, 10);
   let merged = 0;
   for (const c of intel.candidates) {
-    const srcJson = JSON.stringify(c.sources || []);
-    const contJson = JSON.stringify(c.party_contenders || []);
-    const vsMean = c.vote_share === null || c.vote_share === undefined ? null : Math.round(+c.vote_share * 10) / 10;
-    const existing = db.prepare('SELECT id, confidence FROM election_candidates WHERE lower(name)=lower(?)').get(c.name);
-    if (existing) {
-      db.prepare(`UPDATE election_candidates SET party=?, is_independent=?, party_contenders=?,
-        ticket_likelihood=?, vote_share_mean=?, vote_share_sd=?,
-        sentiment_score=?, sentiment_label=?, sentiment_summary=?, bio=?, current_activity=?, strategy=?,
-        track_record=?, sources=?, confidence=?, updated_at=? WHERE id=?`)
-        .run(c.party || null, c.is_independent ? 1 : 0, contJson,
-          c.ticket_likelihood, vsMean, mc.sdForConfidence(c.confidence),
-          c.sentiment_score, c.sentiment_label, c.sentiment_summary, c.bio, c.current_activity, c.strategy,
-          c.track_record, srcJson, c.confidence, now, existing.id);
-    } else {
-      db.prepare(`INSERT INTO election_candidates
-        (name, party, is_independent, party_contenders, ticket_likelihood, vote_share_mean, vote_share_sd,
-         sentiment_score, sentiment_label,
-         sentiment_summary, bio, current_activity, strategy, track_record, sources, confidence, manual, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`)
-        .run(c.name, c.party || null, c.is_independent ? 1 : 0, contJson,
-          c.ticket_likelihood, vsMean, mc.sdForConfidence(c.confidence),
-          c.sentiment_score, c.sentiment_label,
-          c.sentiment_summary, c.bio, c.current_activity, c.strategy,
-          c.track_record, srcJson, c.confidence, now);
+    try {
+      const srcJson = JSON.stringify(c.sources || []);
+      const contJson = JSON.stringify(c.party_contenders || []);
+      const vsMean = c.vote_share === null || c.vote_share === undefined ? null : Math.round(+c.vote_share * 10) / 10;
+      const existing = db.prepare('SELECT id, confidence FROM election_candidates WHERE lower(name)=lower(?)').get(c.name);
+      if (existing) {
+        db.prepare(`UPDATE election_candidates SET party=?, is_independent=?, party_contenders=?,
+          ticket_likelihood=?, vote_share_mean=?, vote_share_sd=?,
+          sentiment_score=?, sentiment_label=?, sentiment_summary=?, bio=?, current_activity=?, strategy=?,
+          track_record=?, sources=?, confidence=?, updated_at=? WHERE id=?`)
+          .run(c.party || null, c.is_independent ? 1 : 0, contJson,
+            c.ticket_likelihood, vsMean, mc.sdForConfidence(c.confidence),
+            c.sentiment_score, c.sentiment_label, c.sentiment_summary, c.bio, c.current_activity, c.strategy,
+            c.track_record, srcJson, c.confidence, now, existing.id);
+      } else {
+        db.prepare(`INSERT INTO election_candidates
+          (name, party, is_independent, party_contenders, ticket_likelihood, vote_share_mean, vote_share_sd,
+           sentiment_score, sentiment_label,
+           sentiment_summary, bio, current_activity, strategy, track_record, sources, confidence, manual, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`)
+          .run(c.name, c.party || null, c.is_independent ? 1 : 0, contJson,
+            c.ticket_likelihood, vsMean, mc.sdForConfidence(c.confidence),
+            c.sentiment_score, c.sentiment_label,
+            c.sentiment_summary, c.bio, c.current_activity, c.strategy,
+            c.track_record, srcJson, c.confidence, now);
+      }
+      merged++;
+    } catch (e) {
+      console.error(`[intel] merge failed for "${c.name}":`, e.message);
     }
-    merged++;
   }
   // Monte Carlo: turn vote-share estimates into true win probabilities.
   const sim = recomputeWinProbabilities();
