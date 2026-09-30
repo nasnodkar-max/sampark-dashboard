@@ -538,6 +538,7 @@ async function loadCitizens(){
     </div>`).join('') : '<div class="empty">No citizens found.</div>';
 }
 let intelMetric = 'win', intelLastRun = 0;
+const openSocEdits = new Set(), socDrafts = {};
 const CHART_COLORS = ['#C05B2B','#2E5CA6','#20744A','#9D2B5E','#8F6414','#5B4BC4','#B3372B','#3E7C6B'];
 
 async function loadIntel(){
@@ -599,12 +600,12 @@ function candCard(c, i){
           ${c.linkedin_url ? `<a href="${esc(c.linkedin_url)}" target="_blank" rel="noopener" style="font-size:12px;color:var(--terra-dark)">LinkedIn ↗</a>` : ''}
           <button class="btn ghost" style="padding:3px 10px;font-size:11.5px" onclick="toggleSocEdit(${c.id})">✎ handles</button>
         </div>
-        <div id="socedit-${c.id}" style="display:none;margin-top:6px;gap:6px;flex-wrap:wrap">
-          <input id="socfb-${c.id}" placeholder="Facebook profile ID or page URL" value="${esc(c.facebook_handle||'')}" style="flex:1;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px">
-          <input id="socig-${c.id}" placeholder="Instagram username" value="${esc(c.instagram_handle||'')}" style="flex:1;min-width:130px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px">
-          <input id="socli-${c.id}" placeholder="LinkedIn profile URL" value="${esc(c.linkedin_url||'')}" style="flex:1;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px">
-          <button class="btn primary" style="padding:7px 14px;font-size:12.5px" onclick="saveSocHandles(${c.id})">Save</button>
-        </div>
+        <form id="socedit-${c.id}" onsubmit="event.preventDefault();saveSocHandles(${c.id})" style="display:${openSocEdits.has(c.id)?'flex':'none'};margin-top:6px;gap:6px;flex-wrap:wrap">
+          <input id="socfb-${c.id}" placeholder="Facebook profile ID or page URL" value="${esc((socDrafts[c.id]&&socDrafts[c.id].fb)||c.facebook_handle||'')}" oninput="socDraft(${c.id},'fb',this.value)" style="flex:1;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px">
+          <input id="socig-${c.id}" placeholder="Instagram username" value="${esc((socDrafts[c.id]&&socDrafts[c.id].ig)||c.instagram_handle||'')}" oninput="socDraft(${c.id},'ig',this.value)" style="flex:1;min-width:130px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px">
+          <input id="socli-${c.id}" placeholder="LinkedIn profile URL" value="${esc((socDrafts[c.id]&&socDrafts[c.id].li)||c.linkedin_url||'')}" oninput="socDraft(${c.id},'li',this.value)" style="flex:1;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12.5px">
+          <button type="submit" class="btn primary" style="padding:7px 14px;font-size:12.5px">Save</button>
+        </form>
         <div class="chips" style="margin:8px 0 6px" id="soctabs-${c.id}">
           <button class="chip active" data-plat="facebook" onclick="socSwitch(${c.id},'facebook')">Facebook</button>
           <button class="chip" data-plat="instagram" onclick="socSwitch(${c.id},'instagram')">Instagram</button>
@@ -748,9 +749,15 @@ function renderSocPosts(id, plat){
       <div style="font-size:13px;color:#4A463C;margin-top:2px">${esc((p.caption||'').slice(0,220))}${(p.caption||'').length>220?'…':''}</div>
     </div>`).join('');
 }
+function socDraft(id, k, v){
+  socDrafts[id] = socDrafts[id] || {};
+  socDrafts[id][k] = v;
+}
 function toggleSocEdit(id){
   const el = $('socedit-'+id);
-  el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+  const open = el.style.display === 'none';
+  el.style.display = open ? 'flex' : 'none';
+  if(open) openSocEdits.add(id); else { openSocEdits.delete(id); delete socDrafts[id]; }
 }
 async function saveSocHandles(id){
   const payload = {
@@ -760,6 +767,7 @@ async function saveSocHandles(id){
   };
   try {
     await api('/api/election-intel/candidates/'+id+'/social', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    openSocEdits.delete(id); delete socDrafts[id];
     toast('Social handles saved — posts refresh daily');
     loadIntel();
   } catch(e){ toast('Save failed: '+e.message); }
