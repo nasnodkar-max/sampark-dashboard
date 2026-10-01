@@ -174,6 +174,47 @@ try {
   // only here — on later startups the ALTER throws and the whole block is skipped.
   db.exec("UPDATE citizens SET source='dummy'");
 } catch (e) { /* already there */ }
+// One-time repair (2026-10-01): the blanket UPDATE above also caught a few real
+// WhatsApp/simulator citizens that predate the migration. Seed rows were inserted in
+// bulk (dozens sharing one created_at minute); any 'dummy' row created outside those
+// bulk minutes is a real messager -> re-label 'whatsapp'. Idempotent: after the fix,
+// no 'dummy' rows remain outside bulk minutes, so re-runs change nothing.
+try {
+  const bulk = db.prepare(`SELECT CAST(created_at/60000 AS INTEGER) m FROM citizens WHERE source='dummy' GROUP BY m HAVING COUNT(*) >= 50`).all().map(r => r.m);
+  if (bulk.length) {
+    const clause = bulk.map(() => `(created_at < ? OR created_at >= ?)`).join(' AND ');
+    const args = [Date.now()];
+    bulk.forEach(m => args.push(m * 60000, (m + 1) * 60000));
+    const r = db.prepare(`UPDATE citizens SET source='whatsapp', updated_at=? WHERE source='dummy' AND ${clause}`).run(...args);
+    if (r.changes) console.log(`[repair] re-labeled ${r.changes} pre-migration real citizen(s) as whatsapp`);
+  }
+} catch (e) { console.log('[repair] citizen-source repair skipped:', e.message); }
+// Resolve "today"/"tomorrow"/"day after tomorrow" (optionally followed by ", <rest>")
+// to an absolute IST date, so stored event dates never go stale. Used by captureDetails
+// and by the one-time repair below; defined early because migrations run at startup.
+function resolveRelativeDate(text, baseTs) {
+  const m = String(text || '').match(/^\s*(today|tomorrow|day after tomorrow)\b\s*,?\s*(.*)$/i);
+  if (!m) return text;
+  const add = m[1].toLowerCase() === 'today' ? 0 : m[1].toLowerCase() === 'tomorrow' ? 1 : 2;
+  const d = new Date((baseTs || Date.now()) + 5.5 * 3600e3 + add * 864e5);
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const abs = `${d.getUTCDate()} ${mon[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  const rest = (m[2] || '').trim();
+  return rest ? `${abs}, ${rest}` : abs;
+}
+// One-time repair (2026-10-01): event_datetime was stored in citizens' own words
+// ("tomorrow"), which goes stale the next day. Resolve the common relative forms
+// against the day the details were captured (ticket updated_at). Idempotent.
+try {
+  const rows = db.prepare(`SELECT id, event_datetime, updated_at FROM tickets WHERE kind='event' AND event_datetime IS NOT NULL`).all();
+  const upd = db.prepare(`UPDATE tickets SET event_datetime=? WHERE id=?`);
+  let fixed = 0;
+  for (const t of rows) {
+    const r = resolveRelativeDate(t.event_datetime, t.updated_at || Date.now());
+    if (r !== t.event_datetime) { upd.run(r, t.id); fixed++; }
+  }
+  if (fixed) console.log(`[repair] resolved ${fixed} stale relative event date(s) to absolute dates`);
+} catch (e) { console.log('[repair] event-date repair skipped:', e.message); }
 // Electoral roll import: real voter records from the public roll (CEO Goa). Kept in its own
 // table — roll entries have no phone/wa_id — and labeled "Public database" in the UI.
 db.exec(`
@@ -516,6 +557,8 @@ async function captureDetails(citizen, ticket, text) {
     venue: d?.venue || null,
     home_address: d?.home_address || null,
   };
+  // Safety net even when the LLM was used: never store a relative date.
+  if (ticket.kind === 'event' && out.event_datetime) out.event_datetime = resolveRelativeDate(out.event_datetime, now);
   if (!d) {
     // No LLM: keep the citizen's words where the politician can use them,
     // plus light heuristics for the optional home address and the venue.
@@ -529,6 +572,8 @@ async function captureDetails(citizen, ticket, text) {
       const m = locText.match(/^(.+?)\s+at\s+(.+)$/i);
       if (m) { out.event_datetime = m[1].trim(); out.venue = m[2].trim(); }
       else out.event_datetime = locText || null;
+      // Never store a relative date ("tomorrow") — resolve it against today.
+      if (out.event_datetime) out.event_datetime = resolveRelativeDate(out.event_datetime, now);
     } else {
       out.issue_address = locText || null;
     }

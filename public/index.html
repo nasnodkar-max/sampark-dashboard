@@ -192,7 +192,7 @@
   .empty{color:var(--muted);font-size:14px;padding:18px 4px;line-height:1.55}
   .tabpage{display:none}.tabpage.active{display:block;animation:fadein .18s ease}
   @keyframes fadein{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
-  @media (max-width:760px){.kpis{grid-template-columns:repeat(2,1fr)}.trow .msg{display:none}.trow .addr{display:none}header{padding:10px 14px}nav.tabs{padding:10px 14px}.wrap{padding:16px 14px 50px}}
+  @media (max-width:760px){.kpis{grid-template-columns:repeat(2,1fr)}.trow{flex-wrap:wrap}.trow .msg{display:none}.trow .addr{display:block;flex-basis:100%;white-space:normal;overflow:visible;min-width:0}header{padding:10px 14px}nav.tabs{padding:10px 14px}.wrap{padding:16px 14px 50px}}
 </style>
 </head>
 <body>
