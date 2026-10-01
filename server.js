@@ -1484,9 +1484,32 @@ async function runIntelEval() {
   };
 }
 
+// Candidates the research must never list for this constituency (they contest
+// elsewhere). Matched case-insensitively; enforced in the research prompt's
+// standing notes, in the merge loop below, and cleaned up at startup.
+const INTEL_EXCLUDED_NAMES = ['vijai sardesai'];
+function intelNameExcluded(name) {
+  const n = String(name || '').toLowerCase();
+  return INTEL_EXCLUDED_NAMES.some((x) => n.includes(x));
+}
+// Delete any election_candidates rows (and their snapshots) matching the
+// exclusion list. Returns the number of candidates removed.
+function deleteExcludedCandidates() {
+  let removed = 0;
+  for (const x of INTEL_EXCLUDED_NAMES) {
+    const rows = db.prepare(`SELECT id, name FROM election_candidates WHERE lower(name) LIKE ?`).all(`%${x}%`);
+    for (const r of rows) {
+      db.prepare('DELETE FROM candidate_snapshots WHERE candidate_id=?').run(r.id);
+      db.prepare('DELETE FROM election_candidates WHERE id=?').run(r.id);
+      removed++;
+      console.log(`[intel] removed excluded candidate "${r.name}"`);
+    }
+  }
+  return removed;
+}
+
 async function refreshElectionIntel() {
-  console.log('[intel] starting election research…');
-  const intel = await ai.researchElectionIntel({ constituency: CONSTITUENCY });
+  console.log('[intel] starting election research…');  const intel = await ai.researchElectionIntel({ constituency: CONSTITUENCY });
   const now = Date.now();
   if (!intel || !intel.candidates.length) {
     db.prepare('INSERT INTO intel_runs (ran_at, status, candidate_count, note) VALUES (?,?,?,?)')
@@ -1498,6 +1521,10 @@ async function refreshElectionIntel() {
   let merged = 0;
   for (const c of intel.candidates) {
     try {
+      if (intelNameExcluded(c.name)) {
+        console.log(`[intel] skipping excluded candidate "${c.name}"`);
+        continue;
+      }
       const srcJson = JSON.stringify(c.sources || []);
       const contJson = JSON.stringify(c.party_contenders || []);
       const vsMean = c.vote_share === null || c.vote_share === undefined ? null : Math.round(+c.vote_share * 10) / 10;
@@ -2254,6 +2281,21 @@ try {
     console.log(`[intel] one-time MC horizon recompute done: ${sim.simulated} candidates`);
   }
 } catch (e) { console.error('[intel] MC horizon recompute failed:', e.message); }
+// One-time (2026-10-01): Vijai Sardesai (Goa Forward Party, sitting Fatorda
+// MLA) was incorrectly listed by research as a Margao candidate. Remove him
+// and his snapshots, then re-run the Monte Carlo over the remaining
+// candidates so the win probabilities redistribute. The merge loop and the
+// research prompt's standing notes now exclude him permanently.
+try {
+  if (!db.prepare(`SELECT value FROM app_flags WHERE key='intel_exclude_sardesai_v1'`).get()) {
+    const removed = deleteExcludedCandidates();
+    const sim = recomputeWinProbabilities();
+    const todayStr = new Date().toISOString().slice(0, 10);
+    for (const c of db.prepare('SELECT * FROM election_candidates').all()) upsertIntelSnapshot(c.id, todayStr, c);
+    db.prepare(`INSERT INTO app_flags (key, value) VALUES ('intel_exclude_sardesai_v1','1')`).run();
+    console.log(`[intel] excluded-candidate cleanup done: removed ${removed}, MC recomputed over ${sim.simulated} candidates`);
+  }
+} catch (e) { console.error('[intel] excluded-candidate cleanup failed:', e.message); }
 scheduleDailyElectionIntel();
 
 module.exports = { db, handleIncoming };
