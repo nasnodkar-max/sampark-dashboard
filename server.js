@@ -1485,15 +1485,26 @@ async function runIntelEval() {
 }
 
 // Candidates the research must never list for this constituency (they contest
-// elsewhere). Matched case-insensitively; enforced in the research prompt's
-// standing notes, in the merge loop below, and cleaned up at startup.
-const INTEL_EXCLUDED_NAMES = ['vijai sardesai'];
+// elsewhere). Entries are case-insensitive match fragments against candidate
+// names and the race summary — keep them distinctive (surname suffices here).
+// Enforced in the research prompt's standing notes, in the merge loop below,
+// in the race-summary sanitizer, and cleaned up at startup.
+const INTEL_EXCLUDED_NAMES = ['vijai sardesai', 'sardesai'];
 function intelNameExcluded(name) {
   const n = String(name || '').toLowerCase();
   return INTEL_EXCLUDED_NAMES.some((x) => n.includes(x));
 }
-// Delete any election_candidates rows (and their snapshots) matching the
-// exclusion list. Returns the number of candidates removed.
+// Strip any mention of excluded candidates from the research's race summary.
+// The prompt already forbids it, but vivid search results can override the
+// instruction — this is the deterministic backstop. Drops whole sentences
+// that mention an excluded name; never touches the appended MC/eval lines.
+function sanitizeRaceSummary(text) {
+  if (!text) return text;
+  const sentences = String(text).match(/[^.!?]+[.!?]+/g) || [String(text)];
+  const kept = sentences.filter((s) => !intelNameExcluded(s));
+  const out = kept.join(' ').replace(/\s+/g, ' ').trim();
+  return out || 'Research summary withheld: it referenced only excluded candidates.';
+}
 function deleteExcludedCandidates() {
   let removed = 0;
   for (const x of INTEL_EXCLUDED_NAMES) {
@@ -1571,7 +1582,7 @@ async function refreshElectionIntel() {
     const c = { sentiment_score: r.sentiment_score, win_likelihood: Math.round(r.win_probability || 0), ticket_likelihood: r.ticket_likelihood };
     upsertIntelSnapshot(r.id, day, c);
   }
-  let note = intel.race_summary || '';
+  let note = sanitizeRaceSummary(intel.race_summary) || '';
   if (sim.simulated) note += ` Monte Carlo: ${sim.simulated} candidates × 10,000 simulated elections.`;
   if (evalSummary) note += ` Data-quality eval: score ${evalSummary.score}/100, ${evalSummary.corrections_applied} auto-fixed, ${evalSummary.issues} flagged for review.`;
   db.prepare('INSERT INTO intel_runs (ran_at, status, candidate_count, note) VALUES (?,?,?,?)')
@@ -2296,6 +2307,24 @@ try {
     console.log(`[intel] excluded-candidate cleanup done: removed ${removed}, MC recomputed over ${sim.simulated} candidates`);
   }
 } catch (e) { console.error('[intel] excluded-candidate cleanup failed:', e.message); }
+// One-time (2026-10-01): the 06:34 research run's stored summary still discusses
+// Sardesai as a Margao contender (its prose was written before the exclusion).
+// Sanitize the latest note's race-summary portion; the appended MC/eval lines
+// are left untouched.
+try {
+  if (!db.prepare(`SELECT value FROM app_flags WHERE key='intel_sanitize_summary_v1'`).get()) {
+    const lastRun = db.prepare("SELECT id, note FROM intel_runs WHERE status='ok' ORDER BY ran_at DESC LIMIT 1").get();
+    if (lastRun && /sardesai/i.test(lastRun.note || '')) {
+      const mcIdx = lastRun.note.indexOf(' Monte Carlo:');
+      const head = mcIdx >= 0 ? lastRun.note.slice(0, mcIdx) : lastRun.note;
+      const tail = mcIdx >= 0 ? lastRun.note.slice(mcIdx) : '';
+      const clean = sanitizeRaceSummary(head);
+      db.prepare('UPDATE intel_runs SET note=? WHERE id=?').run((clean + tail).replace(/\s+/g, ' ').trim(), lastRun.id);
+      console.log('[intel] sanitized excluded-candidate mentions from stored race summary');
+    }
+    db.prepare(`INSERT INTO app_flags (key, value) VALUES ('intel_sanitize_summary_v1','1')`).run();
+  }
+} catch (e) { console.error('[intel] summary sanitize failed:', e.message); }
 scheduleDailyElectionIntel();
 
 module.exports = { db, handleIncoming };
