@@ -2233,6 +2233,23 @@ try {
     const sim = recomputeWinProbabilities();
     const todayStr = new Date().toISOString().slice(0, 10);
     for (const c of db.prepare('SELECT * FROM election_candidates').all()) upsertIntelSnapshot(c.id, todayStr, c);
+    // The stored race summary quotes the pre-fix win probabilities (e.g. 99.7%)
+    // as prose. Patch those derived numbers so the text matches the corrected
+    // bars; the underlying research prose is untouched.
+    try {
+      const lastRun = db.prepare("SELECT id, note FROM intel_runs WHERE status='ok' ORDER BY ran_at DESC LIMIT 1").get();
+      if (lastRun && /99\.7% win probability/.test(lastRun.note || '')) {
+        const wp = (pat) => db.prepare(`SELECT win_probability FROM election_candidates WHERE lower(name) LIKE ?`).get(pat);
+        let note = lastRun.note;
+        const k = wp('%digambar%kamat%') || wp('%kamat%');
+        const c = wp('%chirag%');
+        if (k && k.win_probability != null) note = note.replace('99.7% win probability', `${k.win_probability}% win probability`);
+        if (c && c.win_probability != null) note = note.replace('0.4% win probability', `${c.win_probability}% win probability`);
+        note += ' (Win probabilities corrected 2026-10-01: the forecast now accounts for how much campaigns can move numbers before election day.)';
+        db.prepare('UPDATE intel_runs SET note=? WHERE id=?').run(note, lastRun.id);
+        console.log('[intel] patched stale win probabilities in race summary note');
+      }
+    } catch (e) { console.error('[intel] race-summary patch failed:', e.message); }
     db.prepare(`INSERT INTO app_flags (key, value) VALUES ('mc_horizon_fix_v1','1')`).run();
     console.log(`[intel] one-time MC horizon recompute done: ${sim.simulated} candidates`);
   }
