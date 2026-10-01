@@ -1871,6 +1871,40 @@ app.post('/api/admin/seed', express.json(), (req, res) => {
   }
 });
 
+// Admin: bulk import electoral-roll records (public roll data, labeled "Public database"
+// in the UI). Body: { records: [{epic,name,age,gender,house_no,section,part_no,polling_station}] }.
+// Upserts on EPIC so re-running is safe. Auth: dashboard password cookie or x-sync-token.
+app.post('/api/admin/import-roll', express.json({ limit: '30mb' }), (req, res) => {
+  try {
+    const recs = Array.isArray(req.body.records) ? req.body.records : null;
+    if (!recs) return res.status(400).json({ error: 'records array required' });
+    const now = Date.now();
+    const ins = db.prepare(`INSERT INTO electoral_roll (epic, name, age, gender, house_no, section, part_no, polling_station, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(epic) DO UPDATE SET name=excluded.name, age=excluded.age, gender=excluded.gender,
+        house_no=excluded.house_no, section=excluded.section, part_no=excluded.part_no,
+        polling_station=excluded.polling_station`);
+    let inserted = 0, skipped = 0;
+    db.exec('BEGIN');
+    try {
+      for (const r of recs) {
+        const epic = String(r.epic || '').trim();
+        if (!epic) { skipped++; continue; }
+        ins.run(epic, r.name || null, r.age == null ? null : parseInt(r.age, 10) || null,
+          r.gender || null, r.house_no || null, r.section || null,
+          r.part_no == null ? null : parseInt(r.part_no, 10) || null,
+          r.polling_station || null, now);
+        inserted++;
+      }
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    res.json({ ok: true, inserted, skipped, total: db.prepare('SELECT COUNT(*) c FROM electoral_roll').get().c });
+  } catch (e) {
+    console.error('roll import failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/tickets/:id', (req, res) => {
   const t = db.prepare('SELECT * FROM tickets WHERE id=?').get(req.params.id);
   if (!t) return res.status(404).json({ error: 'not found' });
