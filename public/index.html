@@ -90,6 +90,11 @@
   .insight .rank svg{width:21px;height:21px;color:var(--terra)}
   .insight .body{flex:1}.insight .body b{font-size:15px}
   .insight .sum{font-size:13px;color:#4A463C;margin:5px 0;line-height:1.55}
+  .charttip{position:absolute;display:none;z-index:30;background:#2E2A24;color:#F7F2E8;border-radius:10px;padding:10px 12px;font-size:12.5px;line-height:1.5;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.25);min-width:180px;max-width:250px}
+  .charttip b{color:#fff}
+  .focusitem{border:1px solid var(--line);border-left:4px solid var(--terra);border-radius:12px;padding:13px 16px;margin-bottom:10px;background:#FFFBF3}
+  .focusitem .why{font-size:13px;color:#4A463C;margin:5px 0;line-height:1.55}
+  .focusitem .do{font-size:13px;margin-top:6px;line-height:1.55}
   .insight .act{font-size:13px;line-height:1.5;background:var(--terra-soft);border-left:3px solid var(--terra);padding:9px 12px;border-radius:0 10px 10px 0;margin-top:8px;color:#5C3A22}
   .insight .srcs{font-size:12px;color:var(--muted);margin-top:8px}
   .insight .srcs a{color:var(--terra-dark);text-decoration:none}
@@ -200,12 +205,12 @@
 <nav class="tabs" id="tabs">
   <button data-tab="ask" class="active" onclick="showTab('ask')"><span class="tabmark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span>Ask Sampark</button>
   <button data-tab="intel" onclick="showTab('intel')"><span class="tabmark"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 1.8c.8 5.4 3.3 7.9 8.7 8.7-5.4.8-7.9 3.3-8.7 8.7-.8-5.4-3.3-7.9-8.7-8.7 5.4-.8 7.9-3.3 8.7-8.7z"/></svg></span>Election Intel</button>
+  <button data-tab="insights" onclick="showTab('insights')">Insights</button>
   <button data-tab="overview" onclick="showTab('overview')">Overview</button>
   <button data-tab="tickets" onclick="showTab('tickets')">Tickets<span class="cnt" id="cntTickets"></span></button>
   <button data-tab="issues" onclick="showTab('issues')">Issues</button>
   <button data-tab="events" onclick="showTab('events')">Events<span class="cnt" id="cntEvents"></span></button>
   <button data-tab="citizens" onclick="showTab('citizens')">Citizens<span class="cnt" id="cntCitizens"></span></button>
-  <button data-tab="insights" onclick="showTab('insights')">Insights</button>
   <button data-tab="approvals" onclick="showTab('approvals')">Approvals<span class="cnt" id="cntApprovals"></span></button>
 </nav>
 <div class="wrap">
@@ -299,6 +304,19 @@
     </div>
   </div>
 
+  <div class="tabpage" id="page-insights">
+    <div class="card"><h2>Constituency Insights <span class="tag">refreshed daily by AI</span>
+      <span style="float:right"><button class="btn ghost" onclick="refreshInsights(true)">↻ Refresh now</button></span></h2>
+      <div id="insMeta" style="font-size:12px;color:var(--muted);margin-bottom:12px"></div>
+      <h3 style="margin:4px 0 10px">🎯 What to focus on <span class="tag">this week's priorities</span></h3>
+      <div id="focusList"><div class="empty">Loading…</div></div>
+      <h3 style="margin:20px 0 10px">From constituency issues <span class="tag">top 10 · last 30 days of tickets</span></h3>
+      <div id="insList"></div>
+      <h3 style="margin:20px 0 10px">From the web <span class="tag">recent Margao &amp; Goa news, researched by AI</span></h3>
+      <div id="webInsList"></div>
+    </div>
+  </div>
+
   <div class="tabpage" id="page-overview">
     <div class="card"><h2>2-Minute Daily Brief</h2><ul class="brief" id="brief"><li>Loading…</li></ul></div>
     <div class="kpis" id="kpis"></div>
@@ -340,17 +358,6 @@
       <span style="float:right"><button class="btn ghost" onclick="seedDemo()">↓ Load 1,000 demo chats</button></span></h2>
       <input class="search" id="citSearch" placeholder="Search by name, phone or address…" oninput="loadCitizens()">
       <div id="citList"></div>
-    </div>
-  </div>
-
-  <div class="tabpage" id="page-insights">
-    <div class="card"><h2>Constituency Insights <span class="tag">refreshed daily by AI</span>
-      <span style="float:right"><button class="btn ghost" onclick="refreshInsights(true)">↻ Refresh now</button></span></h2>
-      <div id="insMeta" style="font-size:12px;color:var(--muted);margin-bottom:12px"></div>
-      <h3 style="margin:4px 0 10px">From constituency issues <span class="tag">top 10 · last 30 days of tickets</span></h3>
-      <div id="insList"></div>
-      <h3 style="margin:20px 0 10px">From the web <span class="tag">recent Margao &amp; Goa news, researched by AI</span></h3>
-      <div id="webInsList"></div>
     </div>
   </div>
 
@@ -647,6 +654,12 @@ function candCard(c, i){
   </div>`;
 }
 
+let intelGeom = null; // saved chart geometry for the hover tooltip
+function fmtTipDay(day){
+  const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const p = String(day).split('-');
+  return p.length === 3 ? `${+p[2]} ${M[+p[1]-1]}` : String(day);
+}
 function drawIntelChart(cands, snaps){
   const cv = $('intelChart');
   if(!cv) return;
@@ -666,6 +679,8 @@ function drawIntelChart(cands, snaps){
     ctx.fillStyle = '#7A746A';
     ctx.fillText('No trend data yet — the first daily research run will populate this chart.', padL, H/2);
     $('chartLegend').innerHTML = '';
+    intelGeom = null;
+    const oldTip = $('intelTip'); if(oldTip) oldTip.style.display = 'none';
     return;
   }
   const X = i => padL + (days.length === 1 ? (W-padL-padR)/2 : i*(W-padL-padR)/(days.length-1));
@@ -696,6 +711,70 @@ function drawIntelChart(cands, snaps){
   $('chartLegend').innerHTML = cands.filter(c => (byId[c.id]||[]).length).map((c, ci) =>
     `<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${CHART_COLORS[ci % CHART_COLORS.length]};margin-right:5px"></span>${esc(c.name)}</span>`
   ).join('');
+  // Save geometry + per-day values for the hover tooltip.
+  intelGeom = {
+    days, X, Y, padL, padT, padB, W, H, cands, snaps,
+    series: cands.map((c, ci) => {
+      const m = {};
+      (byId[c.id] || []).forEach(s => { if(val(s) != null) m[s.day] = val(s); });
+      return { name: c.name, color: CHART_COLORS[ci % CHART_COLORS.length], byDay: m };
+    }).filter(s => Object.keys(s.byDay).length)
+  };
+  let tip = $('intelTip');
+  if(!tip){
+    tip = document.createElement('div');
+    tip.id = 'intelTip'; tip.className = 'charttip';
+    cv.parentElement.style.position = 'relative';
+    cv.parentElement.appendChild(tip);
+  }
+  if(!cv._tipBound){
+    cv._tipBound = true;
+    cv.style.cursor = 'crosshair';
+    cv.addEventListener('mousemove', intelHoverMove);
+    cv.addEventListener('mouseleave', intelHoverLeave);
+  }
+}
+function intelHoverMove(e){
+  const g = intelGeom, cv = $('intelChart');
+  if(!g || !g.days.length){ return; }
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  let bi = 0, bd = 1e9;
+  g.days.forEach((d, i) => { const dx = Math.abs(g.X(i) - mx); if(dx < bd){ bd = dx; bi = i; } });
+  drawIntelChart(g.cands, g.snaps); // redraw clean (resets transform), then overlay
+  const dpr = window.devicePixelRatio || 1;
+  const ctx = cv.getContext('2d');
+  ctx.save(); ctx.scale(dpr, dpr);
+  const x = g.X(bi);
+  ctx.strokeStyle = 'rgba(110,100,88,.5)'; ctx.setLineDash([4,4]); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x, g.padT); ctx.lineTo(x, g.H - g.padB); ctx.stroke(); ctx.setLineDash([]);
+  g.series.forEach(s => {
+    const v = s.byDay[g.days[bi]];
+    if(v == null) return;
+    ctx.fillStyle = s.color;
+    ctx.beginPath(); ctx.arc(x, g.Y(v), 5.5, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  });
+  ctx.restore();
+  const day = g.days[bi];
+  const rows = g.series.map(s => {
+    const v = s.byDay[day];
+    if(v == null) return '';
+    const txt = intelMetric === 'sentiment' ? (v > 0 ? '+' + v : '' + v) : v + '%';
+    return `<div style="display:flex;align-items:center;gap:7px;margin-top:3px"><span style="width:9px;height:9px;border-radius:50%;background:${s.color};flex:none"></span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.name)}</span><b style="margin-left:8px">${txt}</b></div>`;
+  }).join('');
+  const tip = $('intelTip');
+  tip.innerHTML = `<div style="font-weight:700;margin-bottom:3px">${fmtTipDay(day)}</div>${rows}`;
+  tip.style.display = 'block';
+  const pw = cv.parentElement.clientWidth;
+  let lx = x + 16; if(lx + 210 > pw) lx = Math.max(4, x - 220);
+  tip.style.left = lx + 'px';
+  tip.style.top = Math.max(4, my - 30) + 'px';
+}
+function intelHoverLeave(){
+  const g = intelGeom, cv = $('intelChart');
+  const tip = $('intelTip'); if(tip) tip.style.display = 'none';
+  if(g) drawIntelChart(g.cands, g.snaps); // redraw without the crosshair
 }
 
 function drawMcCharts(cands){
@@ -898,6 +977,31 @@ async function loadInsights(force){
     const d = await api('/api/insights');
     $('insMeta').textContent = d.day ? `For ${d.day}${d.refreshing ? ' · updating in the background…' : ' · refreshed daily at 6 AM'}` : 'No data yet — message data will appear here.';
     const issues = d.issues || [], web = d.web || [];
+    // 🎯 What to focus on — top priorities with the reason why.
+    const priIssues = [...issues].sort((a, b) =>
+      ((b.trend === 'rising') - (a.trend === 'rising')) || ((b.ticket_count || 0) - (a.ticket_count || 0)));
+    const focus = [];
+    priIssues.slice(0, 3).forEach((i, n) => focus.push(`
+      <div class="focusitem">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:15px">${n + 1}. ${esc(i.topic)}</b>
+          <span class="pill tr-${i.trend}">${i.trend}</span><span class="pill p-new">${i.ticket_count} tickets</span></div>
+        <div class="why"><b>Why focus here:</b> ${esc(i.summary)}${i.trend === 'rising' ? ' Complaints are rising — acting now stops it becoming a campaign issue.' : ''}</div>
+        ${i.suggested_action ? `<div class="do">👉 <b>Do this:</b> ${esc(i.suggested_action)}</div>` : ''}
+      </div>`));
+    web.slice(0, 2).forEach(i => {
+      let srcs = [];
+      try { srcs = JSON.parse(i.urls || '[]'); } catch(e){}
+      focus.push(`
+      <div class="focusitem">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:15px">${focus.length + 1}. ${esc(i.topic)}</b>
+          <span class="pill tr-${i.trend}">${i.trend}</span><span class="pill" style="background:#eef2ff;color:#3730a3">in the news</span></div>
+        <div class="why"><b>Why focus here:</b> ${esc(i.summary)} Getting ahead of the news cycle lets the office own the narrative.</div>
+        ${i.suggested_action ? `<div class="do">👉 <b>Do this:</b> ${esc(i.suggested_action)}</div>` : ''}
+        ${srcs.length ? `<div style="font-size:12px;margin-top:6px">Sources: ${srcs.map(s=>`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title||s.url)}</a>`).join(' · ')}</div>` : ''}
+      </div>`);
+    });
+    $('focusList').innerHTML = focus.length ? focus.join('')
+      : '<div class="empty">Not enough data yet for priorities.</div>';
     $('insList').innerHTML = issues.length ? issues.map(i=>`
       <div class="insight">
         <div class="rank">${i.rank}</div>
