@@ -357,6 +357,12 @@
     <div class="card"><h2>Citizen Registry <span class="tag">everyone who ever messaged</span>
       <span style="float:right"><button class="btn ghost" onclick="seedDemo()">↓ Load 1,000 demo chats</button></span></h2>
       <input class="search" id="citSearch" placeholder="Search by name, phone or address…" oninput="loadCitizens()">
+      <div class="chips" style="margin-top:10px" id="citFilters">
+        <button class="chip active" data-src="all" onclick="setCitSource('all')">All</button>
+        <button class="chip" data-src="whatsapp" onclick="setCitSource('whatsapp')">WhatsApp</button>
+        <button class="chip" data-src="dummy" onclick="setCitSource('dummy')">Dummy</button>
+        <button class="chip" data-src="roll" onclick="setCitSource('roll')">Public database</button>
+      </div>
       <div id="citList"></div>
     </div>
   </div>
@@ -540,16 +546,42 @@ async function seedDemo(){
   } catch(e){ toast('Seed failed: '+e.message); }
   refreshHeader(); refreshTab();
 }
+let citSource = 'all';
+function setCitSource(s){
+  citSource = s;
+  document.querySelectorAll('#citFilters .chip').forEach(b => b.classList.toggle('active', b.dataset.src === s));
+  loadCitizens();
+}
+function srcBadge(c){
+  if(c.source === 'roll') return '<span class="pill" style="background:#eef2ff;color:#3730a3">Public database</span>';
+  if(c.source === 'dummy') return '<span class="pill p-new">Dummy</span>';
+  return '<span class="pill p-resolved">WhatsApp</span>';
+}
 async function loadCitizens(){
   const q = $('citSearch').value.trim();
-  const list = await api('/api/citizens' + (q ? '?q='+encodeURIComponent(q) : ''));
-  $('citList').innerHTML = list.length ? list.slice(0,100).map(c=>`
+  let url = '/api/citizens?source=' + citSource;
+  if(q) url += '&q=' + encodeURIComponent(q);
+  const list = await api(url);
+  $('citList').innerHTML = list.length ? list.slice(0,100).map(c=>{
+    if(c.kind === 'roll'){
+      const sub = [c.age ? c.age + ' yrs' : null, c.gender].filter(Boolean).join(' · ');
+      const part = [c.part_no ? 'Part ' + c.part_no : null, c.polling_station].filter(Boolean).join(' — ');
+      return `
+      <div class="trow" style="cursor:default">
+        <div class="who" style="min-width:170px"><b>${esc(c.name||'—')}</b><span>EPIC ${esc(c.wa_id||'')}</span></div>
+        <div class="addr" style="flex:1">📍 ${esc(c.address||'—')}${sub?`<br><span style="color:var(--muted)">${esc(sub)}</span>`:''}${part?`<br><span style="color:var(--muted)">🗳️ ${esc(part)}</span>`:''}</div>
+        ${srcBadge(c)}
+      </div>`;
+    }
+    return `
     <div class="trow" style="cursor:default">
       <div class="who" style="min-width:170px"><b>${esc(c.name||'—')}</b><span>${esc(c.wa_id||'')}</span></div>
       <div class="addr" style="flex:1">📍 ${esc(c.address||'—')}</div>
       <div class="msg">${c.tickets} chat${c.tickets==1?'':'s'} · ${c.open_tickets} open</div>
+      ${srcBadge(c)}
       <span class="pill ${c.onboarding_step==='done'?'p-resolved':'p-new'}">${c.onboarding_step==='done'?'registered':c.onboarding_step}</span>
-    </div>`).join('') : '<div class="empty">No citizens found.</div>';
+    </div>`;
+  }).join('') : '<div class="empty">No citizens found.</div>';
 }
 let intelMetric = 'win', intelLastRun = 0;
 const openSocEdits = new Set(), socDrafts = {};

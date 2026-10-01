@@ -167,6 +167,32 @@ CREATE TABLE IF NOT EXISTS citizens (
 );
 CREATE INDEX IF NOT EXISTS idx_citizens_wa ON citizens(wa_id);
 `);
+try {
+  db.exec("ALTER TABLE citizens ADD COLUMN source TEXT DEFAULT 'whatsapp'");
+  // Fresh column: every pre-existing row came from the fictional demo seed (the live WhatsApp
+  // end-to-end test was still pending at migration time), so label them dummy. This UPDATE runs
+  // only here — on later startups the ALTER throws and the whole block is skipped.
+  db.exec("UPDATE citizens SET source='dummy'");
+} catch (e) { /* already there */ }
+// Electoral roll import: real voter records from the public roll (CEO Goa). Kept in its own
+// table — roll entries have no phone/wa_id — and labeled "Public database" in the UI.
+db.exec(`
+CREATE TABLE IF NOT EXISTS electoral_roll (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  epic TEXT UNIQUE NOT NULL,
+  name TEXT,
+  age INTEGER,
+  gender TEXT,
+  house_no TEXT,
+  section TEXT,
+  part_no INTEGER,
+  polling_station TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_roll_epic ON electoral_roll(epic);
+CREATE INDEX IF NOT EXISTS idx_roll_name ON electoral_roll(name);
+CREATE INDEX IF NOT EXISTS idx_roll_part ON electoral_roll(part_no);
+`);
 // Tickets: kind (issue vs event), location of the issue, event date/time + venue.
 try { db.exec("ALTER TABLE tickets ADD COLUMN kind TEXT DEFAULT 'issue'"); } catch (e) { /* already there */ }
 try { db.exec("ALTER TABLE tickets ADD COLUMN issue_address TEXT"); } catch (e) { /* already there */ }
@@ -667,7 +693,7 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
   // Citizens registry: every wa_id gets a row; first-time citizens onboard (name -> details).
   let citizen = db.prepare('SELECT * FROM citizens WHERE wa_id=?').get(waId);
   if (!citizen) {
-    db.prepare("INSERT INTO citizens (wa_id, name, phone, address, onboarding_step, created_at, updated_at) VALUES (?,?,?,?, 'name', ?, ?)")
+    db.prepare("INSERT INTO citizens (wa_id, name, phone, address, onboarding_step, source, created_at, updated_at) VALUES (?,?,?,?, 'name', 'whatsapp', ?, ?)")
       .run(waId, name || null, null, null, ts || now, now);
     citizen = db.prepare('SELECT * FROM citizens WHERE wa_id=?').get(waId);
   }
@@ -1061,13 +1087,35 @@ app.get('/api/tickets', (req, res) => {
 
 // Citizens registry: everyone who ever messaged, with their ticket counts.
 app.get('/api/citizens', (req, res) => {
-  const { q } = req.query;
-  const sel = `c.*, (SELECT COUNT(*) FROM tickets t WHERE t.wa_id=c.wa_id) AS tickets,
-               (SELECT COUNT(*) FROM tickets t WHERE t.wa_id=c.wa_id AND t.status != 'resolved') AS open_tickets`;
-  const rows = q
-    ? db.prepare(`SELECT ${sel} FROM citizens c WHERE c.name LIKE ? OR c.wa_id LIKE ? OR c.address LIKE ? ORDER BY c.updated_at DESC LIMIT 100`).all(`%${q}%`, `%${q}%`, `%${q}%`)
-    : db.prepare(`SELECT ${sel} FROM citizens c ORDER BY c.updated_at DESC LIMIT 100`).all();
-  res.json(rows);
+  const { q, source } = req.query; // source: all | whatsapp | dummy | roll
+  const src = ['whatsapp', 'dummy', 'roll'].includes(source) ? source : 'all';
+  const like = q ? `%${q}%` : null;
+  let citizens = [];
+  if (src !== 'roll') {
+    const sel = `c.*, (SELECT COUNT(*) FROM tickets t WHERE t.wa_id=c.wa_id) AS tickets,
+                 (SELECT COUNT(*) FROM tickets t WHERE t.wa_id=c.wa_id AND t.status != 'resolved') AS open_tickets`;
+    const conds = [], args = [];
+    if (src !== 'all') { conds.push('c.source=?'); args.push(src); }
+    if (like) { conds.push('(c.name LIKE ? OR c.wa_id LIKE ? OR c.address LIKE ?)'); args.push(like, like, like); }
+    const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+    citizens = db.prepare(`SELECT ${sel} FROM citizens c ${where} ORDER BY c.updated_at DESC LIMIT 100`).all(...args);
+    citizens.forEach(c => { c.kind = 'citizen'; });
+  }
+  let roll = [];
+  if (src === 'all' || src === 'roll') {
+    const conds = [], args = [];
+    if (like) { conds.push('(name LIKE ? OR epic LIKE ? OR section LIKE ? OR polling_station LIKE ?)'); args.push(like, like, like, like); }
+    const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+    roll = db.prepare(`SELECT * FROM electoral_roll ${where} ORDER BY part_no, name LIMIT 100`).all(...args)
+      .map(r => ({
+        kind: 'roll', source: 'roll', id: 'roll-' + r.id,
+        name: r.name, wa_id: r.epic,
+        address: [r.house_no ? 'H.No. ' + r.house_no : null, r.section].filter(Boolean).join(', ') || null,
+        age: r.age, gender: r.gender, part_no: r.part_no, polling_station: r.polling_station,
+        tickets: 0, open_tickets: 0, onboarding_step: null,
+      }));
+  }
+  res.json([...citizens, ...roll]);
 });
 
 // Events: invitations/occasions citizens invited the MLA to.
