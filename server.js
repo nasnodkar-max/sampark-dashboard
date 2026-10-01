@@ -1296,11 +1296,16 @@ function recomputeWinProbabilities() {
   const rows = db.prepare(`SELECT id, vote_share_mean, vote_share_sd, confidence
     FROM election_candidates WHERE vote_share_mean IS NOT NULL`).all();
   if (!rows.length) return { simulated: 0 };
+  // Widen each estimate's sd with forecast-horizon uncertainty: a confident
+  // estimate today is not a decided election months out.
+  const months = mc.monthsToElection();
+  const hsd = mc.horizonSd(months);
   const inputs = rows.map((r) => ({
     id: r.id,
     vote_share_mean: r.vote_share_mean,
-    vote_share_sd: r.vote_share_sd || mc.sdForConfidence(r.confidence),
+    vote_share_sd: mc.effectiveSd(r.vote_share_sd || mc.sdForConfidence(r.confidence), months),
   }));
+  console.log(`[intel] MC: ${months.toFixed(1)} months to election, horizon sd ${hsd.toFixed(1)}`);
   const results = mc.simulate(inputs, 10000);
   const upd = db.prepare(`UPDATE election_candidates
     SET win_probability=?, win_likelihood=?, mc_bins=?, updated_at=? WHERE id=?`);
@@ -2217,6 +2222,21 @@ function scheduleDailyElectionIntel() {
   } catch (e) { console.error('intel cold-start check failed:', e.message); }
 }
 seedIntelHistory();
+// One-time (2026-10-01): the Monte Carlo model now widens vote-share sds with
+// forecast-horizon uncertainty. Recompute once at startup so the displayed
+// probabilities reflect the corrected model immediately instead of waiting
+// for the next 07:00 research run. Refreshes today's snapshot too, so the
+// trend chart's right edge matches the corrected bars.
+try {
+  db.exec('CREATE TABLE IF NOT EXISTS app_flags (key TEXT PRIMARY KEY, value TEXT)');
+  if (!db.prepare(`SELECT value FROM app_flags WHERE key='mc_horizon_fix_v1'`).get()) {
+    const sim = recomputeWinProbabilities();
+    const todayStr = new Date().toISOString().slice(0, 10);
+    for (const c of db.prepare('SELECT * FROM election_candidates').all()) upsertIntelSnapshot(c.id, todayStr, c);
+    db.prepare(`INSERT INTO app_flags (key, value) VALUES ('mc_horizon_fix_v1','1')`).run();
+    console.log(`[intel] one-time MC horizon recompute done: ${sim.simulated} candidates`);
+  }
+} catch (e) { console.error('[intel] MC horizon recompute failed:', e.message); }
 scheduleDailyElectionIntel();
 
 module.exports = { db, handleIncoming };
