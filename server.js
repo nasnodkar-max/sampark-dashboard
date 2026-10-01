@@ -1353,43 +1353,8 @@ function seedIntelHistory() {
     }
     // 2. Re-simulate win probabilities on the corrected field.
     recomputeWinProbabilities();
-    // 3. Backfill 29 days of dummy trend history (deterministic).
-    let seed = 20260930;
-    const srand = () => {
-      seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-    const cands = db.prepare('SELECT id, name, sentiment_score FROM election_candidates').all();
-    const hasSnap = db.prepare('SELECT id FROM candidate_snapshots WHERE candidate_id=? AND day=?');
-    const insSnap = db.prepare(`INSERT INTO candidate_snapshots
-      (candidate_id, day, sentiment_score, win_likelihood, ticket_likelihood) VALUES (?,?,?,?,?)`);
-    let kval = 89;
-    for (const c of cands) {
-      const nm = String(c.name).toLowerCase();
-      const isKamat = nm.includes('kamat');
-      const isChirag = nm.includes('chirag');
-      for (let d = 29; d >= 1; d--) {
-        const day = new Date(Date.now() - d * 864e5).toISOString().slice(0, 10);
-        if (hasSnap.get(c.id, day)) continue;
-        let w;
-        if (isKamat) {
-          kval += (srand() - 0.5) * 2.4;
-          kval = Math.max(86, Math.min(92, kval));
-          w = Math.round(kval * 10) / 10;
-        } else if (isChirag) {
-          const t = (29 - d) / 28; // 12% a month ago -> 8% yesterday
-          w = Math.round((12 - 4 * t + (srand() - 0.5) * 0.8) * 10) / 10;
-          w = Math.max(8, Math.min(12, w));
-        } else {
-          w = Math.round((0.3 + srand() * 1.5) * 10) / 10;
-        }
-        const s = c.sentiment_score == null ? null
-          : Math.max(-100, Math.min(100, Math.round(c.sentiment_score + (srand() - 0.5) * 10)));
-        insSnap.run(c.id, day, s, w, null);
-      }
-    }
+    // 3. (removed 2026-10-01: the 29-day dummy trend backfill is gone — the
+    // trend chart now grows from real daily research only.)
     // 4. Align today's snapshot with the freshly recomputed Monte Carlo
     // probabilities so the trend chart's right edge matches the MC bars
     // (the snapshot written by the earlier research run predates the fix).
@@ -1520,7 +1485,23 @@ function deleteExcludedCandidates() {
 }
 
 async function refreshElectionIntel() {
-  console.log('[intel] starting election research…');  const intel = await ai.researchElectionIntel({ constituency: CONSTITUENCY });
+  console.log('[intel] starting election research…');
+  // Previous report's estimates, so the research can explain day-over-day
+  // movements with specific reasons.
+  let previous = null;
+  try {
+    const prevRun = db.prepare("SELECT ran_at, note FROM intel_runs WHERE status='ok' ORDER BY ran_at DESC LIMIT 1").get();
+    if (prevRun) {
+      const prevCands = db.prepare('SELECT name, vote_share_mean FROM election_candidates WHERE vote_share_mean IS NOT NULL').all();
+      const mi = (prevRun.note || '').indexOf(' Monte Carlo:');
+      previous = {
+        date: new Date(prevRun.ran_at).toISOString().slice(0, 10),
+        estimates: prevCands.map((c) => ({ name: c.name, vote_share: c.vote_share_mean })),
+        summary: mi >= 0 ? prevRun.note.slice(0, mi) : (prevRun.note || ''),
+      };
+    }
+  } catch (e) { console.error('[intel] previous-report lookup failed:', e.message); }
+  const intel = await ai.researchElectionIntel({ constituency: CONSTITUENCY, previous });
   const now = Date.now();
   if (!intel || !intel.candidates.length) {
     db.prepare('INSERT INTO intel_runs (ran_at, status, candidate_count, note) VALUES (?,?,?,?)')
@@ -1529,6 +1510,12 @@ async function refreshElectionIntel() {
     return { ok: false, error: 'research unavailable' };
   }
   const day = new Date().toISOString().slice(0, 10);
+  // Pre-merge state, for movement deltas.
+  const prevMap = new Map();
+  try {
+    for (const r of db.prepare('SELECT lower(name) AS n, vote_share_mean, win_probability FROM election_candidates').all())
+      prevMap.set(r.n, { vote_share_mean: r.vote_share_mean, win_probability: r.win_probability });
+  } catch (e) { console.error('[intel] prev-state capture failed:', e.message); }
   let merged = 0;
   for (const c of intel.candidates) {
     try {
@@ -1582,12 +1569,32 @@ async function refreshElectionIntel() {
     const c = { sentiment_score: r.sentiment_score, win_likelihood: Math.round(r.win_probability || 0), ticket_likelihood: r.ticket_likelihood };
     upsertIntelSnapshot(r.id, day, c);
   }
-  let note = sanitizeRaceSummary(intel.race_summary) || '';
+  // Per-candidate movement explanations: the research's reasons, matched to
+  // real candidate rows and enriched with before/after numbers.
+  const movements = [];
+  try {
+    for (const m of intel.movements || []) {
+      const row = db.prepare('SELECT name, vote_share_mean, win_probability FROM election_candidates WHERE lower(name)=lower(?)').get(m.name);
+      if (!row) continue; // excluded or unknown — skip
+      if (movements.some((x) => x.name.toLowerCase() === row.name.toLowerCase())) continue;
+      const prev = prevMap.get(row.name.toLowerCase()) || {};
+      movements.push({
+        name: row.name,
+        prev_vote_share: prev.vote_share_mean ?? null,
+        vote_share: row.vote_share_mean ?? null,
+        prev_win_prob: prev.win_probability ?? null,
+        win_prob: row.win_probability ?? null,
+        reasons: m.reasons || [],
+      });
+    }
+  } catch (e) { console.error('[intel] movement build failed:', e.message); }
+  const cleanSummary = sanitizeRaceSummary(intel.race_summary) || '';
+  let note = cleanSummary;
   if (sim.simulated) note += ` Monte Carlo: ${sim.simulated} candidates × 10,000 simulated elections.`;
   if (evalSummary) note += ` Data-quality eval: score ${evalSummary.score}/100, ${evalSummary.corrections_applied} auto-fixed, ${evalSummary.issues} flagged for review.`;
-  db.prepare('INSERT INTO intel_runs (ran_at, status, candidate_count, note) VALUES (?,?,?,?)')
-    .run(now, 'ok', merged, note);
-  console.log(`[intel] research complete: ${merged} candidates, MC simulated ${sim.simulated}, eval ${evalSummary ? evalSummary.score : 'n/a'}`);
+  db.prepare('INSERT INTO intel_runs (ran_at, status, candidate_count, note, summary, movements_json) VALUES (?,?,?,?,?,?)')
+    .run(now, 'ok', merged, note, cleanSummary, JSON.stringify(movements));
+  console.log(`[intel] research complete: ${merged} candidates, MC simulated ${sim.simulated}, eval ${evalSummary ? evalSummary.score : 'n/a'}, movements ${movements.length}`);
   return { ok: true, candidates: merged, eval: evalSummary };
 }
 
@@ -1616,6 +1623,67 @@ app.get('/api/election-intel', (req, res) => {
     race_summary: (lastRun && lastRun.note) || null,
     election_year: ELECTION_YEAR, constituency: CONSTITUENCY,
   });
+});
+
+// Daily report archive: one entry per UTC date that has a successful run.
+app.get('/api/election-intel/reports', (req, res) => {
+  try {
+    const days = db.prepare(`
+      SELECT date(ran_at/1000, 'unixepoch') AS day, MAX(ran_at) AS ran_at
+      FROM intel_runs WHERE status='ok' GROUP BY day ORDER BY day DESC`).all();
+    res.json(days.map((d) => ({ day: d.day, ran_at: d.ran_at })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// One day's report: summary, per-candidate standings with deltas vs the
+// previous tracked day, and the research's movement reasons.
+app.get('/api/election-intel/report', (req, res) => {
+  const day = String(req.query.date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return res.status(400).json({ error: 'bad date' });
+  try {
+    const run = db.prepare(`SELECT ran_at, candidate_count, note, summary, movements_json
+      FROM intel_runs WHERE status='ok' AND date(ran_at/1000,'unixepoch')=?
+      ORDER BY ran_at DESC LIMIT 1`).get(day);
+    if (!run) return res.status(404).json({ error: 'no report for this day' });
+    let summary = run.summary;
+    if (!summary && run.note) {
+      const mi = run.note.indexOf(' Monte Carlo:');
+      summary = mi >= 0 ? run.note.slice(0, mi) : run.note;
+    }
+    let movements = [];
+    try { movements = JSON.parse(run.movements_json || '[]'); } catch { /* none */ }
+    const moveByName = new Map(movements.map((m) => [String(m.name).toLowerCase(), m]));
+    const snaps = db.prepare(`
+      SELECT s.win_likelihood, s.sentiment_score, c.name, c.party, c.is_independent
+      FROM candidate_snapshots s JOIN election_candidates c ON c.id = s.candidate_id
+      WHERE s.day = ?`).all(day);
+    const prevDay = db.prepare(`SELECT MAX(day) AS d FROM candidate_snapshots WHERE day < ?`).get(day);
+    const prevByName = new Map();
+    if (prevDay && prevDay.d) {
+      for (const r of db.prepare(`SELECT s.win_likelihood, c.name FROM candidate_snapshots s
+        JOIN election_candidates c ON c.id = s.candidate_id WHERE s.day = ?`).all(prevDay.d))
+        prevByName.set(String(r.name).toLowerCase(), r.win_likelihood);
+    }
+    const candidates = snaps.map((s) => {
+      const key = String(s.name).toLowerCase();
+      const prev = prevByName.has(key) ? prevByName.get(key) : null;
+      const mv = moveByName.get(key);
+      return {
+        name: s.name,
+        party: s.party,
+        is_independent: !!s.is_independent,
+        win_prob: s.win_likelihood,
+        prev_win_prob: prev,
+        delta: (s.win_likelihood == null || prev == null) ? null : Math.round((s.win_likelihood - prev) * 10) / 10,
+        prev_vote_share: mv && mv.prev_vote_share != null ? mv.prev_vote_share : null,
+        vote_share: mv && mv.vote_share != null ? mv.vote_share : null,
+        sentiment: s.sentiment_score,
+        reasons: (mv && mv.reasons) || [],
+        is_new: !!(mv && mv.prev_win_prob == null && mv.prev_vote_share == null),
+      };
+    }).sort((a, b) => (b.win_prob ?? -1) - (a.win_prob ?? -1));
+    res.json({ day, ran_at: run.ran_at, candidate_count: run.candidate_count, summary: summary || '', candidates });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Manual refresh — starts the research in the background; the tab polls.
@@ -2325,6 +2393,19 @@ try {
     db.prepare(`INSERT INTO app_flags (key, value) VALUES ('intel_sanitize_summary_v1','1')`).run();
   }
 } catch (e) { console.error('[intel] summary sanitize failed:', e.message); }
+// Daily-report columns on intel_runs (added 2026-10-01).
+try { db.exec('ALTER TABLE intel_runs ADD COLUMN summary TEXT'); } catch (e) { /* already there */ }
+try { db.exec('ALTER TABLE intel_runs ADD COLUMN movements_json TEXT'); } catch (e) { /* already there */ }
+// One-time (2026-10-01): remove the dummy 29-day trend backfill. Real daily
+// research only started 2026-09-30, so every snapshot with day < '2026-09-30'
+// is display data. The trend chart now grows from real daily snapshots only.
+try {
+  if (!db.prepare(`SELECT value FROM app_flags WHERE key='intel_dummy_trend_removed_v1'`).get()) {
+    const r = db.prepare(`DELETE FROM candidate_snapshots WHERE day < '2026-09-30'`).run();
+    db.prepare(`INSERT INTO app_flags (key, value) VALUES ('intel_dummy_trend_removed_v1','1')`).run();
+    console.log(`[intel] removed dummy trend snapshots: ${r.changes} rows deleted`);
+  }
+} catch (e) { console.error('[intel] dummy trend removal failed:', e.message); }
 scheduleDailyElectionIntel();
 
 module.exports = { db, handleIncoming };

@@ -190,6 +190,14 @@
   .simbox input{flex:1;min-width:180px;border:1px solid var(--line);border-radius:10px;padding:10px 13px;font-size:14px;font-family:inherit;background:#fff;color:var(--ink)}
   .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#2B2822;color:#fff;padding:12px 22px;border-radius:12px;font-size:14px;z-index:100;display:none;box-shadow:0 6px 20px rgba(0,0,0,.25)}
   .empty{color:var(--muted);font-size:14px;padding:18px 4px;line-height:1.55}
+  .reptable{width:100%;border-collapse:collapse;font-size:13.5px}
+  .reptable th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);padding:8px 10px;border-bottom:1px solid var(--line)}
+  .reptable td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
+  .reptable tr:last-child td{border-bottom:none}
+  .delta-up{color:#1E7A34;font-weight:600}
+  .delta-down{color:#B3372B;font-weight:600}
+  .why-list{margin:4px 0 0;padding-left:18px}
+  .why-list li{margin:3px 0}
   .tabpage{display:none}.tabpage.active{display:block;animation:fadein .18s ease}
   @keyframes fadein{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
   @media (max-width:760px){.kpis{grid-template-columns:repeat(2,1fr)}.trow{flex-wrap:wrap}.trow .msg{display:none}.trow .addr{display:block;flex-basis:100%;white-space:normal;overflow:visible;min-width:0}header{padding:10px 14px}nav.tabs{padding:10px 14px}.wrap{padding:16px 14px 50px}}
@@ -266,6 +274,12 @@
       <canvas id="mcDistChart" style="width:100%;display:block"></canvas>
       <div id="mcLegend" style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12.5px;color:var(--muted)"></div>
       <div id="mcEvalLine" style="margin-top:10px;font-size:12.5px;color:var(--muted)"></div>
+    </div>
+    <div class="card"><h2>Daily reports <span class="tag">day-by-day archive</span>
+      <span style="float:right"><select id="reportDay" onchange="loadReport()" style="border:1px solid var(--line);border-radius:10px;padding:7px 10px;font-size:13px;background:#fff"></select></span></h2>
+      <div id="reportMeta" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+      <div id="reportSummary" style="font-size:14px;line-height:1.6;margin-bottom:12px"></div>
+      <div id="reportBody"><div class="empty">Loading…</div></div>
     </div>
     <div class="card"><h2>Potential candidates <span class="tag">ranked by likelihood to win</span></h2>
       <div id="candList"><div class="empty">Loading…</div></div>
@@ -604,6 +618,7 @@ async function loadIntel(){
   $('candList').innerHTML = cands.length ? cands.map((c, i) => candCard(c, i)).join('')
     : '<div class="empty">No candidates yet.</div>';
   cands.forEach(c => loadSocPosts(c.id));
+  loadReportDays();
 }
 
 function pctBar(label, pct){
@@ -906,6 +921,50 @@ async function refreshIntel(){
     if(intelLastRun && intelLastRun !== before){ toast('Election intel updated'); return; }
   }
   toast('Still researching — check back in a few minutes');
+}
+
+async function loadReportDays(){
+  const sel = $('reportDay');
+  if(!sel) return;
+  const cur = sel.value;
+  let days = [];
+  try { days = await api('/api/election-intel/reports'); } catch(e){ return; }
+  sel.innerHTML = (days || []).map(d => `<option value="${d.day}">${d.day}</option>`).join('');
+  if(!days.length){ $('reportBody').innerHTML = '<div class="empty">No daily reports yet — the first scheduled research run will create one.</div>'; return; }
+  sel.value = (days.some(d => d.day === cur) && cur) ? cur : days[0].day;
+  loadReport();
+}
+
+async function loadReport(){
+  const day = $('reportDay') && $('reportDay').value;
+  if(!day) return;
+  let r;
+  try { r = await api('/api/election-intel/report?date=' + encodeURIComponent(day)); }
+  catch(e){ $('reportBody').innerHTML = '<div class="empty">No report for this day.</div>'; return; }
+  $('reportMeta').textContent = `Researched ${new Date(r.ran_at).toLocaleString()} · ${r.candidates.length} candidates`;
+  $('reportSummary').innerHTML = r.summary ? `<b>The race so far:</b> ${esc(r.summary)}` : '';
+  if(!r.candidates.length){ $('reportBody').innerHTML = '<div class="empty">No candidate data for this day.</div>'; return; }
+  const fmtP = v => v == null ? '—' : v.toFixed(1) + '%';
+  const rows = r.candidates.map(c => {
+    const d = c.delta;
+    const arrow = c.is_new ? '<span class="tag">new</span>'
+      : d == null ? '—'
+      : d >= 0.05 ? `<span class="delta-up">▲ +${d.toFixed(1)}</span>`
+      : d <= -0.05 ? `<span class="delta-down">▼ ${d.toFixed(1)}</span>` : '—';
+    const why = (c.reasons && c.reasons.length)
+      ? `<ul class="why-list">${c.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`
+      : '<span style="color:var(--muted)">—</span>';
+    const vs = (c.vote_share != null)
+      ? `<div style="font-size:11.5px;color:var(--muted)">est. vote ${c.prev_vote_share != null ? c.prev_vote_share + '% → ' : ''}${c.vote_share}%</div>` : '';
+    return `<tr><td><b>${esc(c.name)}</b><div style="font-size:11.5px;color:var(--muted)">${esc(c.party || '')}</div></td>` +
+      `<td style="text-align:right;white-space:nowrap">${fmtP(c.prev_win_prob)}</td>` +
+      `<td style="text-align:right;white-space:nowrap"><b>${fmtP(c.win_prob)}</b>${vs}</td>` +
+      `<td style="text-align:right;white-space:nowrap">${arrow}</td>` +
+      `<td>${why}</td></tr>`;
+  }).join('');
+  const anyWhy = r.candidates.some(c => c.reasons && c.reasons.length);
+  $('reportBody').innerHTML =
+    `<table class="reptable"><thead><tr><th>Candidate</th><th style="text-align:right">Prev. day</th><th style="text-align:right">Win prob.</th><th style="text-align:right">Change</th><th>Why ${anyWhy ? '' : '<span style="text-transform:none;letter-spacing:0">(research explanations start with the next scheduled report)</span>'}</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 async function addCandidate(){
