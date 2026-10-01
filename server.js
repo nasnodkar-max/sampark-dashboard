@@ -175,32 +175,49 @@ try {
   db.exec("UPDATE citizens SET source='dummy'");
 } catch (e) { /* already there */ }
 // One-time repair (2026-10-01): the blanket UPDATE above also caught a few real
-// WhatsApp/simulator citizens that predate the migration. Seed rows were inserted in
-// bulk (dozens sharing one created_at minute); any 'dummy' row created outside those
-// bulk minutes is a real messager -> re-label 'whatsapp'. Idempotent: after the fix,
-// no 'dummy' rows remain outside bulk minutes, so re-runs change nothing.
+// WhatsApp/simulator citizens that predate the migration. Seed citizens are stamped
+// 'dummy' at insert and every one of their messages carries wa_message_id LIKE 'seed-%';
+// any 'dummy' citizen with a genuine (non-seed) inbound message is a real messager ->
+// re-label 'whatsapp'. (The seed backdates created_at over ~120 days, so bulk-minute
+// detection does not work.) Idempotent: after the fix, no 'dummy' rows have real
+// inbound messages, so re-runs change nothing.
 try {
-  const bulk = db.prepare(`SELECT CAST(created_at/60000 AS INTEGER) m FROM citizens WHERE source='dummy' GROUP BY m HAVING COUNT(*) >= 50`).all().map(r => r.m);
-  if (bulk.length) {
-    const clause = bulk.map(() => `(created_at < ? OR created_at >= ?)`).join(' AND ');
-    const args = [Date.now()];
-    bulk.forEach(m => args.push(m * 60000, (m + 1) * 60000));
-    const r = db.prepare(`UPDATE citizens SET source='whatsapp', updated_at=? WHERE source='dummy' AND ${clause}`).run(...args);
-    if (r.changes) console.log(`[repair] re-labeled ${r.changes} pre-migration real citizen(s) as whatsapp`);
-  }
+  const r = db.prepare(`
+    UPDATE citizens SET source='whatsapp', updated_at=?
+    WHERE source='dummy' AND EXISTS (
+      SELECT 1 FROM tickets t JOIN messages m ON m.ticket_id = t.id
+      WHERE t.wa_id = citizens.wa_id
+        AND m.direction = 'in'
+        AND (m.wa_message_id IS NULL OR m.wa_message_id NOT LIKE 'seed-%')
+    )`).run(Date.now());
+  if (r.changes) console.log(`[repair] re-labeled ${r.changes} pre-migration real citizen(s) as whatsapp`);
 } catch (e) { console.log('[repair] citizen-source repair skipped:', e.message); }
 // Resolve "today"/"tomorrow"/"day after tomorrow" (optionally followed by ", <rest>")
 // to an absolute IST date, so stored event dates never go stale. Used by captureDetails
 // and by the one-time repair below; defined early because migrations run at startup.
 function resolveRelativeDate(text, baseTs) {
-  const m = String(text || '').match(/^\s*(today|tomorrow|day after tomorrow)\b\s*,?\s*(.*)$/i);
-  if (!m) return text;
-  const add = m[1].toLowerCase() === 'today' ? 0 : m[1].toLowerCase() === 'tomorrow' ? 1 : 2;
-  const d = new Date((baseTs || Date.now()) + 5.5 * 3600e3 + add * 864e5);
+  const s = String(text || '');
   const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const abs = `${d.getUTCDate()} ${mon[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
-  const rest = (m[2] || '').trim();
-  return rest ? `${abs}, ${rest}` : abs;
+  const absFor = (word) => {
+    const add = word === 'today' ? 0 : word === 'tomorrow' ? 1 : 2;
+    const d = new Date((baseTs || Date.now()) + 5.5 * 3600e3 + add * 864e5);
+    return `${d.getUTCDate()} ${mon[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  };
+  let m = s.match(/^\s*(today|tomorrow|day after tomorrow)\b\s*,?\s*(.*)$/i);
+  if (m) {
+    const abs = absFor(m[1].toLowerCase());
+    const rest = (m[2] || '').trim();
+    return rest ? `${abs}, ${rest}` : abs;
+  }
+  // Time-first forms: "7pm tomorrow", "7 pm tomorrow" -> "1 Oct 2026, 7pm"
+  m = s.match(/^\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s+(today|tomorrow|day after tomorrow)\b\s*,?\s*(.*)$/i);
+  if (m) {
+    const abs = absFor(m[2].toLowerCase());
+    const time = m[1].trim();
+    const rest = (m[3] || '').trim();
+    return rest ? `${abs}, ${time}, ${rest}` : `${abs}, ${time}`;
+  }
+  return s;
 }
 // One-time repair (2026-10-01): event_datetime was stored in citizens' own words
 // ("tomorrow"), which goes stale the next day. Resolve the common relative forms
