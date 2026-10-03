@@ -1490,14 +1490,19 @@ async function refreshElectionIntel() {
   // movements with specific reasons.
   let previous = null;
   try {
-    const prevRun = db.prepare("SELECT ran_at, note FROM intel_runs WHERE status='ok' ORDER BY ran_at DESC LIMIT 1").get();
+    const prevRun = db.prepare("SELECT ran_at, note, movements_json FROM intel_runs WHERE status='ok' ORDER BY ran_at DESC LIMIT 1").get();
     if (prevRun) {
       const prevCands = db.prepare('SELECT name, vote_share_mean FROM election_candidates WHERE vote_share_mean IS NOT NULL').all();
       const mi = (prevRun.note || '').indexOf(' Monte Carlo:');
+      let prevReasons = [];
+      try {
+        prevReasons = JSON.parse(prevRun.movements_json || '[]').flatMap((m) => m.reasons || []);
+      } catch { /* none */ }
       previous = {
         date: new Date(prevRun.ran_at).toISOString().slice(0, 10),
         estimates: prevCands.map((c) => ({ name: c.name, vote_share: c.vote_share_mean })),
         summary: mi >= 0 ? prevRun.note.slice(0, mi) : (prevRun.note || ''),
+        prevReasons,
       };
     }
   } catch (e) { console.error('[intel] previous-report lookup failed:', e.message); }
@@ -2406,6 +2411,18 @@ try {
     console.log(`[intel] removed dummy trend snapshots: ${r.changes} rows deleted`);
   }
 } catch (e) { console.error('[intel] dummy trend removal failed:', e.message); }
+// One-time (2026-10-03): the movement reasons stored before the strict
+// 48-hour recency rule cite stale history (2025 appointments, months-old
+// events) as if it drove day-over-day changes. Clear them; the numeric
+// deltas stay, and fresh last-48h reasons accumulate from the next run.
+try {
+  if (!db.prepare(`SELECT value FROM app_flags WHERE key='intel_clear_stale_movements_v1'`).get()) {
+    const r = db.prepare(`UPDATE intel_runs SET movements_json='[]'
+      WHERE movements_json IS NOT NULL AND movements_json != '[]' AND movements_json != ''`).run();
+    db.prepare(`INSERT INTO app_flags (key, value) VALUES ('intel_clear_stale_movements_v1','1')`).run();
+    console.log(`[intel] cleared stale movement reasons: ${r.changes} runs updated`);
+  }
+} catch (e) { console.error('[intel] stale movement cleanup failed:', e.message); }
 scheduleDailyElectionIntel();
 
 module.exports = { db, handleIncoming };
