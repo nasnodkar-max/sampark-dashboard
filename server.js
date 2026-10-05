@@ -1590,6 +1590,8 @@ async function refreshElectionIntel() {
         prev_win_prob: prev.win_probability ?? null,
         win_prob: row.win_probability ?? null,
         reasons: m.reasons || [],
+        insight: m.insight || '',
+        recommendation: m.recommendation || '',
       });
     }
   } catch (e) { console.error('[intel] movement build failed:', e.message); }
@@ -1684,6 +1686,8 @@ app.get('/api/election-intel/report', (req, res) => {
         vote_share: mv && mv.vote_share != null ? mv.vote_share : null,
         sentiment: s.sentiment_score,
         reasons: (mv && mv.reasons) || [],
+        insight: (mv && mv.insight) || '',
+        recommendation: (mv && mv.recommendation) || '',
         is_new: !!(mv && mv.prev_win_prob == null && mv.prev_vote_share == null),
       };
     }).sort((a, b) => (b.win_prob ?? -1) - (a.win_prob ?? -1));

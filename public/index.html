@@ -275,7 +275,7 @@
       <div id="mcLegend" style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12.5px;color:var(--muted)"></div>
       <div id="mcEvalLine" style="margin-top:10px;font-size:12.5px;color:var(--muted)"></div>
     </div>
-    <div class="card"><h2>Daily reports <span class="tag">day-by-day archive</span>
+    <div class="card"><h2>Daily reports — Margao <span class="tag">day-by-day archive</span>
       <span style="float:right"><select id="reportDay" onchange="loadReport()" style="border:1px solid var(--line);border-radius:10px;padding:7px 10px;font-size:13px;background:#fff"></select></span></h2>
       <div id="reportMeta" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
       <div id="reportSummary" style="font-size:14px;line-height:1.6;margin-bottom:12px"></div>
@@ -951,8 +951,11 @@ async function loadReport(){
       : d == null ? '—'
       : d >= 0.05 ? `<span class="delta-up">▲ +${d.toFixed(1)}</span>`
       : d <= -0.05 ? `<span class="delta-down">▼ ${d.toFixed(1)}</span>` : '—';
-    const why = (c.reasons && c.reasons.length)
-      ? `<ul class="why-list">${c.reasons.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`
+    const hasContent = (c.reasons && c.reasons.length) || c.insight || c.recommendation;
+    const why = hasContent
+      ? `<ul class="why-list">${(c.reasons || []).map(x => `<li>${esc(x)}</li>`).join('')}` +
+        (c.insight ? `<li><b>Insight:</b> ${esc(c.insight)}</li>` : '') +
+        (c.recommendation ? `<li><b>Recommendation:</b> ${esc(c.recommendation)}</li>` : '') + `</ul>`
       : '<span style="color:var(--muted)">—</span>';
     const vs = (c.vote_share != null)
       ? `<div style="font-size:11.5px;color:var(--muted)">est. vote ${c.prev_vote_share != null ? c.prev_vote_share + '% → ' : ''}${c.vote_share}%</div>` : '';
@@ -962,9 +965,9 @@ async function loadReport(){
       `<td style="text-align:right;white-space:nowrap">${arrow}</td>` +
       `<td>${why}</td></tr>`;
   }).join('');
-  const anyWhy = r.candidates.some(c => c.reasons && c.reasons.length);
+  const anyWhy = r.candidates.some(c => (c.reasons && c.reasons.length) || c.insight || c.recommendation);
   $('reportBody').innerHTML =
-    `<table class="reptable"><thead><tr><th>Candidate</th><th style="text-align:right">Prev. day</th><th style="text-align:right">Win prob.</th><th style="text-align:right">Change</th><th>Why ${anyWhy ? '' : '<span style="text-transform:none;letter-spacing:0">(research explanations start with the next scheduled report)</span>'}</th></tr></thead><tbody>${rows}</tbody></table>`;
+    `<table class="reptable"><thead><tr><th>Candidate</th><th style="text-align:right">Prev. day</th><th style="text-align:right">Win prob.</th><th style="text-align:right">Change</th><th>Insights & recommendations ${anyWhy ? '' : '<span style="text-transform:none;letter-spacing:0">(research explanations start with the next scheduled report)</span>'}</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 async function addCandidate(){
