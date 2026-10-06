@@ -905,10 +905,22 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
     // Conversation history so the reply keeps context (e.g. the office asked for
     // a reference number and the citizen just sent it).
     const history = db.prepare("SELECT direction, body FROM messages WHERE ticket_id=? ORDER BY created_at DESC LIMIT 6").all(ticket.id).reverse();
+    // The citizen's full ticket list (open + resolved) so "how many tickets /
+    // past tickets" questions are answered from facts, never hedged.
+    let ticketSummary = '';
+    try {
+      const mine = db.prepare("SELECT id, category, status, kind FROM tickets WHERE wa_id=? ORDER BY created_at DESC LIMIT 10").all(waId);
+      if (mine.length) {
+        const fmt = (t) => `${t.id} (${t.kind === 'event' ? 'event' : (t.category || 'general')}, ${String(t.status || '').replace(/_/g, ' ')})`;
+        const open = mine.filter((t) => t.status !== 'resolved');
+        const shut = mine.filter((t) => t.status === 'resolved');
+        ticketSummary = `This citizen's tickets — open: ${open.length ? open.map(fmt).join('; ') : 'none'}; resolved: ${shut.length ? shut.map(fmt).join('; ') : 'none'}.`;
+      }
+    } catch (e) { console.error('ticket summary failed:', e.message); }
     let draftText = generateDraft({ ...ticket, category }, text);
     let src = 'template';
     try {
-      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text, kind: ticket.kind, ticketId: ticket.id, history });
+      const aiDraft = await ai.generateDraft({ repName: REP_NAME, citizenName: ticket.citizen_name, category, language, text, kind: ticket.kind, ticketId: ticket.id, history, followUp: true, ticketSummary });
       if (aiDraft) { draftText = aiDraft; src = 'ai'; }
     } catch (e) { console.error('AI draft failed, using template:', e.message); }
     // Citizen asking about their ticket number on an existing ticket: guarantee the
