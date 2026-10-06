@@ -905,13 +905,22 @@ async function handleIncoming({ waId, name, text, waMessageId, ts, mediaType, me
     // Conversation history so the reply keeps context (e.g. the office asked for
     // a reference number and the citizen just sent it).
     const history = db.prepare("SELECT direction, body FROM messages WHERE ticket_id=? ORDER BY created_at DESC LIMIT 6").all(ticket.id).reverse();
-    // The citizen's full ticket list (open + resolved) so "how many tickets /
-    // past tickets" questions are answered from facts, never hedged.
+    // The citizen's full ticket list (open + resolved) WITH each ticket's issue
+    // description (first inbound message), so "how many tickets / past tickets /
+    // details of <ticket>" questions are answered from facts, never hedged.
     let ticketSummary = '';
     try {
       const mine = db.prepare("SELECT id, category, status, kind FROM tickets WHERE wa_id=? ORDER BY created_at DESC LIMIT 10").all(waId);
       if (mine.length) {
-        const fmt = (t) => `${t.id} (${t.kind === 'event' ? 'event' : (t.category || 'general')}, ${String(t.status || '').replace(/_/g, ' ')})`;
+        const firstIn = db.prepare("SELECT body FROM messages WHERE ticket_id=? AND direction='in' ORDER BY created_at ASC LIMIT 1");
+        const fmt = (t) => {
+          let desc = 'no description yet';
+          try {
+            const d = firstIn.get(t.id);
+            if (d && d.body) desc = String(d.body).slice(0, 120).replace(/\s+/g, ' ');
+          } catch {}
+          return `${t.id} (${t.kind === 'event' ? 'event' : (t.category || 'general')}, ${String(t.status || '').replace(/_/g, ' ')}): "${desc}"`;
+        };
         const open = mine.filter((t) => t.status !== 'resolved');
         const shut = mine.filter((t) => t.status === 'resolved');
         ticketSummary = `This citizen's tickets — open: ${open.length ? open.map(fmt).join('; ') : 'none'}; resolved: ${shut.length ? shut.map(fmt).join('; ') : 'none'}.`;
