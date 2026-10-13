@@ -1424,6 +1424,9 @@ async function runIntelEval() {
     if (!allowed.has(x.field)) continue;
     const r = byName.get(String(x.candidate || '').toLowerCase());
     if (!r) continue;
+    // Office-added candidates: their party is authoritative (firsthand office
+    // knowledge beats the model) — never auto-"correct" it.
+    if (r.manual === 1 && (x.field === 'party' || x.field === 'is_independent')) continue;
     try {
       if (x.field === 'party') {
         db.prepare('UPDATE election_candidates SET party=?, updated_at=? WHERE id=?')
@@ -1552,16 +1555,32 @@ async function refreshElectionIntel() {
       const srcJson = JSON.stringify(c.sources || []);
       const contJson = JSON.stringify(c.party_contenders || []);
       const vsMean = c.vote_share === null || c.vote_share === undefined ? null : Math.round(+c.vote_share * 10) / 10;
-      const existing = db.prepare('SELECT id, confidence FROM election_candidates WHERE lower(name)=lower(?)').get(c.name);
+      const existing = db.prepare('SELECT id, confidence, manual FROM election_candidates WHERE lower(name)=lower(?)').get(c.name);
       if (existing) {
-        db.prepare(`UPDATE election_candidates SET party=?, is_independent=?, party_contenders=?,
+        // Office-added candidates are authoritative on their own party: the
+        // constituency office's firsthand knowledge overrides web research,
+        // which has repeatedly mislabeled manual entries (2026-10-13: the
+        // research kept flipping the office's Independent Prabhav Naik to BJP).
+        // Research may still update vote share, sentiment, bio, etc.
+        const setClause = existing.manual === 1
+          ? `party_contenders=?,
           ticket_likelihood=?, vote_share_mean=?, vote_share_sd=?,
           sentiment_score=?, sentiment_label=?, sentiment_summary=?, bio=?, current_activity=?, strategy=?,
-          track_record=?, sources=?, confidence=?, updated_at=? WHERE id=?`)
-          .run(c.party || null, c.is_independent ? 1 : 0, contJson,
+          track_record=?, sources=?, confidence=?, updated_at=?`
+          : `party=?, is_independent=?, party_contenders=?,
+          ticket_likelihood=?, vote_share_mean=?, vote_share_sd=?,
+          sentiment_score=?, sentiment_label=?, sentiment_summary=?, bio=?, current_activity=?, strategy=?,
+          track_record=?, sources=?, confidence=?, updated_at=?`;
+        const vals = existing.manual === 1
+          ? [contJson,
             c.ticket_likelihood, vsMean, mc.sdForConfidence(c.confidence),
             c.sentiment_score, c.sentiment_label, c.sentiment_summary, c.bio, c.current_activity, c.strategy,
-            c.track_record, srcJson, c.confidence, now, existing.id);
+            c.track_record, srcJson, c.confidence, now, existing.id]
+          : [c.party || null, c.is_independent ? 1 : 0, contJson,
+            c.ticket_likelihood, vsMean, mc.sdForConfidence(c.confidence),
+            c.sentiment_score, c.sentiment_label, c.sentiment_summary, c.bio, c.current_activity, c.strategy,
+            c.track_record, srcJson, c.confidence, now, existing.id];
+        db.prepare(`UPDATE election_candidates SET ${setClause} WHERE id=?`).run(...vals);
       } else {
         db.prepare(`INSERT INTO election_candidates
           (name, party, is_independent, party_contenders, ticket_likelihood, vote_share_mean, vote_share_sd,
@@ -2448,6 +2467,20 @@ try {
     console.log(`[intel] cleared stale movement reasons: ${r.changes} runs updated`);
   }
 } catch (e) { console.error('[intel] stale movement cleanup failed:', e.message); }
+// One-time (2026-10-13): Sid confirmed Prabhav Naik is an Independent who
+// openly criticizes BJP's Digambar Kamat — the daily research had labeled him
+// BJP and the merge loop kept overwriting the office's manual Independent
+// entry. Correct the row; the merge/eval guards below keep office-set parties
+// authoritative from here on.
+try {
+  if (!db.prepare(`SELECT value FROM app_flags WHERE key='intel_fix_prabhav_party_v1'`).get()) {
+    const r = db.prepare(`UPDATE election_candidates
+      SET party='Independent', is_independent=1, ticket_likelihood=NULL, party_contenders='[]', updated_at=?
+      WHERE lower(name)='prabhav naik'`).run(Date.now());
+    db.prepare(`INSERT INTO app_flags (key, value) VALUES ('intel_fix_prabhav_party_v1','1')`).run();
+    console.log(`[intel] Prabhav Naik party corrected to Independent: ${r.changes} row(s)`);
+  }
+} catch (e) { console.error('[intel] Prabhav party fix failed:', e.message); }
 scheduleDailyElectionIntel();
 
 module.exports = { db, handleIncoming };
