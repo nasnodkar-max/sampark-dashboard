@@ -57,6 +57,17 @@
   .chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:7px 15px;font-size:13px;cursor:pointer;color:var(--muted);font-weight:600;font-family:inherit}
   .chip:hover{border-color:var(--faint)}
   .chip.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .ocard{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:10px}
+  .oc-top{display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap}
+  .oc-chan{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--terra)}
+  .oc-name{font-weight:700;font-size:15px}
+  .oc-pr{margin-left:auto;font-size:12.5px;font-weight:700;color:var(--muted)}
+  .oc-reason{font-size:14px;margin-bottom:4px}
+  .oc-detail{font-size:13px;color:var(--muted);margin-bottom:4px}
+  .oc-meta{font-size:12px;color:var(--faint);margin-bottom:10px}
+  .oc-actions{display:flex;gap:8px}
+  .oc-drafttext{background:var(--bg);border:1px dashed var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px;margin:10px 0;white-space:pre-wrap}
+  .oc-loading,.oc-error{font-size:13px;color:var(--muted);margin:10px 0}
   .trow{display:flex;gap:12px;align-items:center;padding:12px 10px;border-top:1px solid var(--line-soft);cursor:pointer;border-radius:10px}
   .trow:hover{background:#FAF7EF}
   .trow .id{font-weight:700;font-size:13px;color:var(--ink);min-width:74px}
@@ -220,6 +231,7 @@
   <button data-tab="events" onclick="showTab('events')">Events<span class="cnt" id="cntEvents"></span></button>
   <button data-tab="citizens" onclick="showTab('citizens')">Citizens<span class="cnt" id="cntCitizens"></span></button>
   <button data-tab="approvals" onclick="showTab('approvals')">Approvals<span class="cnt" id="cntApprovals"></span></button>
+  <button data-tab="outreach" onclick="showTab('outreach')">Outreach<span class="cnt" id="cntOutreach"></span></button>
 </nav>
 <div class="wrap">
   <div class="banner" id="cfgBanner" style="display:none">⚠️ WhatsApp API not connected — the dashboard works, but sending is disabled. Set <b>WHATSAPP_TOKEN</b> and <b>WHATSAPP_PHONE_NUMBER_ID</b> in the host env vars, then restart.</div>
@@ -384,6 +396,13 @@
   <div class="tabpage" id="page-approvals">
     <div class="card"><h2>Approvals — sensitive drafts, you decide <span class="tag">human approval required</span></h2><div id="approvals"></div></div>
   </div>
+  <div class="tabpage" id="page-outreach">
+    <div class="card"><h2>Outreach — who to visit, call, or message next <span class="tag">connection building</span></h2>
+      <div class="chips" id="outreachChips"></div>
+      <div class="chips" id="outreachSrc"></div>
+      <div id="outreachList"></div>
+    </div>
+  </div>
 </div>
 
 <div class="drawer" id="drawer">
@@ -442,6 +461,7 @@ function refreshTab(){
   else if(activeTab==='intel') loadIntel();
   else if(activeTab==='ask') loadAsk();
   else if(activeTab==='approvals') loadApprovals();
+  else if(activeTab==='outreach') loadOutreach();
 }
 
 async function refreshHeader(){
@@ -1208,6 +1228,64 @@ async function quickApprove(id){
   try { await api('/api/tickets/'+id+'/approve', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})}); toast('Reply sent to citizen'); }
   catch(e){ toast('Send failed: '+e.message); }
   refreshHeader(); refreshTab();
+}
+// ---------- Outreach tab ----------
+let outreachChannel = '', outreachSource = 'all', outreachCache = [];
+const OUTREACH_ICON = { visit: '📍', call: '📞', message: '💬' };
+const OUTREACH_DOT = { high: '🔴', medium: '🟡', low: '🟢' };
+async function loadOutreach(){
+  const q = [outreachChannel && 'channel='+outreachChannel, outreachSource !== 'all' && 'source='+outreachSource].filter(Boolean).join('&');
+  const j = await api('/api/outreach/actions' + (q ? '?'+q : ''));
+  const list = j.actions || [];
+  outreachCache = list;
+  $('cntOutreach').textContent = list.length || '';
+  $('outreachChips').innerHTML = [['','All'],['visit','📍 Visits'],['call','📞 Calls'],['message','💬 Messages']]
+    .map(([v,l])=>`<button class="chip ${outreachChannel===v?'active':''}" onclick="outreachChannel='${v}';loadOutreach()">${l}</button>`).join('');
+  $('outreachSrc').innerHTML = [['all','Everyone'],['whatsapp','WhatsApp'],['dummy','Demo'],['roll','Voter roll']]
+    .map(([v,l])=>`<button class="chip ${outreachSource===v?'active':''}" onclick="outreachSource='${v}';loadOutreach()">${l}</button>`).join('');
+  $('outreachList').innerHTML = list.length ? list.map((a,i)=>outreachCard(a,i)).join('')
+    : '<div class="empty">Nothing on the list — every citizen and household is covered.</div>';
+}
+function outreachCard(a, i){
+  const draftLabel = a.channel === 'message' ? 'Draft message' : a.channel === 'call' ? 'Draft call plan' : 'Draft visit brief';
+  const subj = a.subject === 'household' ? 'Household · voter roll'
+    : 'Person' + (a.source === 'dummy' ? ' · demo' : a.source === 'roll' ? ' · voter roll' : '');
+  return `<div class="ocard">
+    <div class="oc-top"><span class="oc-chan">${OUTREACH_ICON[a.channel]||''} ${esc(a.channel)}</span>
+      <span class="oc-name">${esc(a.name)}</span>
+      <span class="oc-pr">${OUTREACH_DOT[a.priority]||''} ${esc(a.priority)}</span></div>
+    <div class="oc-reason">${esc(a.reason)}</div>
+    ${a.detail ? `<div class="oc-detail">${esc(a.detail)}</div>` : ''}
+    <div class="oc-meta">${esc(subj)}${a.address ? ' · '+esc(a.address) : ''}${a.ticket_id ? ' · '+esc(a.ticket_id) : ''}</div>
+    <div id="ocd${i}" style="display:none"></div>
+    <div class="oc-actions">
+      <button class="btn" onclick="outreachDraft(${i})">✨ ${draftLabel}</button>
+      <button class="btn ghost" onclick="outreachDone(${i})">Mark done</button>
+    </div>
+  </div>`;
+}
+async function outreachDraft(i){
+  const a = outreachCache[i]; if(!a) return;
+  const box = $('ocd'+i);
+  box.style.display = 'block';
+  box.innerHTML = '<div class="oc-loading">Drafting…</div>';
+  try {
+    const j = await api('/api/outreach/actions/draft', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(a) });
+    box.innerHTML = `<div class="oc-drafttext">${esc(j.draft)}</div><button class="btn ghost" onclick="copyOutreachDraft(${i})">Copy</button>`;
+  } catch(e){ box.innerHTML = '<div class="oc-error">Could not draft — try again.</div>'; }
+}
+function copyOutreachDraft(i){
+  const t = document.querySelector('#ocd'+i+' .oc-drafttext');
+  if(t && navigator.clipboard) navigator.clipboard.writeText(t.textContent).then(()=>toast('Copied'));
+}
+async function outreachDone(i){
+  const a = outreachCache[i]; if(!a) return;
+  try {
+    await api('/api/outreach/actions/done', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ wa_id: a.wa_id, household_key: a.household_key, channel: a.channel, reason: a.reason, ticket_id: a.ticket_id }) });
+    toast('Logged — it will not resurface for a while');
+  } catch(e){ toast('Could not log: '+e.message); }
+  loadOutreach();
 }
 async function openTicket(id){
   cur = await api('/api/tickets/'+id);

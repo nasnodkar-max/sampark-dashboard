@@ -192,6 +192,21 @@ try {
     )`).run(Date.now());
   if (r.changes) console.log(`[repair] re-labeled ${r.changes} pre-migration real citizen(s) as whatsapp`);
 } catch (e) { console.log('[repair] citizen-source repair skipped:', e.message); }
+// ---------- Outreach log: tracks completed connection-building actions so the
+// recommendation engine doesn't repeat them (citizen+channel suppressed 30d,
+// households 90d).
+db.exec(`CREATE TABLE IF NOT EXISTS outreach_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wa_id TEXT,
+  household_key TEXT,
+  channel TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  ticket_id TEXT,
+  done_at INTEGER NOT NULL,
+  note TEXT
+)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_outreach_wa ON outreach_log(wa_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_outreach_hh ON outreach_log(household_key)`);
 // Resolve "today"/"tomorrow"/"day after tomorrow" (optionally followed by ", <rest>")
 // to an absolute IST date, so stored event dates never go stale. Used by captureDetails
 // and by the one-time repair below; defined early because migrations run at startup.
@@ -2259,6 +2274,243 @@ app.get('/api/auto-sent', (req, res) => {
     WHERE m.direction='out' AND m.auto=1
     ORDER BY m.created_at DESC LIMIT 20`).all();
   res.json(rows);
+});
+
+// ---------- Outreach actions: prioritized per-person / per-household recommendations ----------
+// The office's connection-building list: who to visit, call, or message next,
+// ranked by urgency. Scoring is deterministic (no LLM in the ranking loop);
+// the LLM only drafts the message / call plan / visit brief on demand.
+// Completed actions are logged to outreach_log (citizen+channel suppressed
+// 30d, households 90d) so the list never repeats itself.
+function computeOutreachActions() {
+  const now = Date.now(), DAY = 86400000;
+  const actions = [];
+  const seen = new Set(); // one action per citizen (strongest need wins); households separate
+  const push = (a) => {
+    const key = a.subject === 'household' ? 'hh:' + a.household_key : 'p:' + a.wa_id;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    a.score = Math.round(a.score);
+    a.priority = a.score >= 45 ? 'high' : a.score >= 25 ? 'medium' : 'low';
+    a.id = key + ':' + a.channel;
+    actions.push(a);
+    return true;
+  };
+  const doneCK = new Set(), doneHH = new Set();
+  try {
+    for (const r of db.prepare(`SELECT wa_id, channel FROM outreach_log WHERE wa_id IS NOT NULL AND done_at > ?`).all(now - 30 * DAY))
+      doneCK.add(r.wa_id + '|' + r.channel);
+    for (const r of db.prepare(`SELECT household_key FROM outreach_log WHERE household_key IS NOT NULL AND done_at > ?`).all(now - 90 * DAY))
+      doneHH.add(r.household_key);
+  } catch (e) { console.error('outreach suppression lookup failed:', e.message); }
+  const ageD = (ts) => Math.max(0, Math.floor((now - ts) / DAY));
+
+  // A. Open issues — one action per person; the strongest ticket drives the channel.
+  try {
+    const rows = db.prepare(`
+      SELECT t.wa_id, c.name AS cname, t.citizen_name, c.source, c.address,
+             COUNT(*) AS n,
+             MAX(CASE t.priority WHEN 'High' THEN 3 WHEN 'Medium' THEN 2 ELSE 1 END) AS pmax,
+             MIN(t.created_at) AS oldest,
+             GROUP_CONCAT(DISTINCT t.category) AS cats
+      FROM tickets t LEFT JOIN citizens c ON c.wa_id = t.wa_id
+      WHERE t.kind = 'issue' AND t.status NOT IN ('resolved', 'closed')
+      GROUP BY t.wa_id`).all();
+    for (const r of rows) {
+      const channel = r.pmax >= 3 ? 'visit' : r.pmax === 2 ? 'call' : 'message';
+      if (doneCK.has(r.wa_id + '|' + channel)) continue;
+      const age = ageD(r.oldest);
+      const base = r.pmax >= 3 ? 40 : r.pmax === 2 ? 25 : 12;
+      let detail = '';
+      try {
+        const top = db.prepare(`
+          SELECT m.body FROM messages m JOIN tickets t ON t.id = m.ticket_id
+          WHERE t.wa_id = ? AND t.kind = 'issue' AND t.status NOT IN ('resolved', 'closed')
+            AND m.direction = 'in'
+          ORDER BY CASE t.priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END, t.created_at ASC
+          LIMIT 1`).get(r.wa_id);
+        if (top && top.body) detail = String(top.body).slice(0, 140).replace(/\s+/g, ' ');
+      } catch {}
+      const cats = String(r.cats || 'issue').replace(/,/g, ', ');
+      push({
+        subject: 'person', channel, wa_id: r.wa_id,
+        name: r.cname || r.citizen_name || 'Citizen',
+        source: r.source || 'whatsapp', address: r.address || null,
+        reason: r.n > 1 ? `${r.n} open issues (${cats}) — oldest ${age}d` : `Open ${cats} issue — ${age}d and counting`,
+        detail, ticket_id: null, score: base + Math.min(age, 25),
+      });
+    }
+  } catch (e) { console.error('outreach: open issues failed:', e.message); }
+
+  // B. Recently resolved (2–10d ago) — satisfaction follow-up closes the loop.
+  try {
+    const rows = db.prepare(`
+      SELECT t.id, t.wa_id, c.name AS cname, t.citizen_name, c.source, t.category, t.updated_at
+      FROM tickets t LEFT JOIN citizens c ON c.wa_id = t.wa_id
+      WHERE t.kind = 'issue' AND t.status = 'resolved' AND t.updated_at > ? AND t.updated_at < ?
+      ORDER BY t.updated_at DESC`).all(now - 10 * DAY, now - 2 * DAY);
+    for (const r of rows) {
+      if (doneCK.has(r.wa_id + '|message')) continue;
+      const d = ageD(r.updated_at);
+      push({
+        subject: 'person', channel: 'message', wa_id: r.wa_id,
+        name: r.cname || r.citizen_name || 'Citizen', source: r.source || 'whatsapp',
+        reason: `${r.category || 'Issue'} resolved ${d}d ago — satisfaction check`,
+        detail: `Ask whether the fix is holding and if anything else is needed. Ticket ${r.id}.`,
+        ticket_id: r.id, score: 30 - d,
+      });
+    }
+  } catch (e) { console.error('outreach: resolved follow-ups failed:', e.message); }
+
+  // C. Upcoming events (next 7d) — invite / remind.
+  try {
+    const rows = db.prepare(`
+      SELECT t.id, t.wa_id, c.name AS cname, t.citizen_name, c.source, t.event_datetime, t.venue
+      FROM tickets t LEFT JOIN citizens c ON c.wa_id = t.wa_id
+      WHERE t.kind = 'event' AND t.event_datetime > ? AND t.event_datetime < ?
+        AND t.status NOT IN ('resolved', 'closed')
+      ORDER BY t.event_datetime ASC`).all(now, now + 7 * DAY);
+    for (const r of rows) {
+      if (!r.wa_id || doneCK.has(r.wa_id + '|message')) continue;
+      const daysUntil = Math.max(0, Math.ceil((r.event_datetime - now) / DAY));
+      let desc = '';
+      try {
+        const m = db.prepare(`SELECT body FROM messages WHERE ticket_id = ? AND direction = 'in' ORDER BY created_at ASC LIMIT 1`).get(r.id);
+        if (m && m.body) desc = String(m.body).slice(0, 120).replace(/\s+/g, ' ');
+      } catch {}
+      const when = new Date(r.event_datetime).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      push({
+        subject: 'person', channel: 'message', wa_id: r.wa_id,
+        name: r.cname || r.citizen_name || 'Citizen', source: r.source || 'whatsapp',
+        reason: `Upcoming event in ${daysUntil}d — invite / remind`,
+        detail: `${desc}${r.venue ? ' @ ' + r.venue : ''} (${when}).`.trim(),
+        ticket_id: r.id, score: 30 - daysUntil,
+      });
+    }
+  } catch (e) { console.error('outreach: events failed:', e.message); }
+
+  // D. New citizens (first seen < 7d, name known) — welcome touch.
+  try {
+    const rows = db.prepare(`
+      SELECT wa_id, name, source FROM citizens
+      WHERE name IS NOT NULL AND name != '' AND created_at > ?
+      ORDER BY created_at DESC LIMIT 20`).all(now - 7 * DAY);
+    for (const r of rows) {
+      if (doneCK.has(r.wa_id + '|message')) continue;
+      push({
+        subject: 'person', channel: 'message', wa_id: r.wa_id, name: r.name,
+        source: r.source || 'whatsapp',
+        reason: 'New citizen this week — welcome touch',
+        detail: 'Welcome them and let them know the office is one message away.',
+        ticket_id: null, score: 16,
+      });
+    }
+  } catch (e) { console.error('outreach: new citizens failed:', e.message); }
+
+  // E. Dormant — no inbound contact in 45+ days, no open tickets: routine check-in.
+  try {
+    const rows = db.prepare(`
+      SELECT c.wa_id, c.name, c.source,
+             MAX(CASE WHEN m.direction = 'in' THEN m.created_at END) AS last_in,
+             SUM(CASE WHEN t.status NOT IN ('resolved', 'closed') THEN 1 ELSE 0 END) AS open_n
+      FROM citizens c
+      LEFT JOIN tickets t ON t.wa_id = c.wa_id
+      LEFT JOIN messages m ON m.ticket_id = t.id
+      WHERE c.name IS NOT NULL AND c.name != ''
+      GROUP BY c.wa_id
+      HAVING open_n = 0 AND (last_in IS NULL OR last_in < ?)
+      LIMIT 60`).all(now - 45 * DAY);
+    let added = 0;
+    for (const r of rows) {
+      if (added >= 15) break;
+      if (doneCK.has(r.wa_id + '|message')) continue;
+      const d = r.last_in ? ageD(r.last_in) : null;
+      if (!push({
+        subject: 'person', channel: 'message', wa_id: r.wa_id, name: r.name,
+        source: r.source || 'whatsapp',
+        reason: d ? `No contact in ${d}d — routine check-in` : 'Never engaged after onboarding — say hello',
+        detail: 'A light touch to keep the relationship warm.',
+        ticket_id: null, score: 10,
+      })) continue;
+      added++;
+    }
+  } catch (e) { console.error('outreach: dormant failed:', e.message); }
+
+  // F. Voter households from the public roll — biggest unengaged households first.
+  try {
+    const rows = db.prepare(`
+      SELECT house_no, section, COUNT(*) AS voters, GROUP_CONCAT(name, ', ') AS members
+      FROM electoral_roll WHERE house_no IS NOT NULL AND house_no != ''
+      GROUP BY house_no, section ORDER BY voters DESC LIMIT 40`).all();
+    for (const r of rows) {
+      const hk = `${r.house_no}|${r.section || ''}`;
+      if (doneHH.has(hk)) continue;
+      const memberList = String(r.members || '').split(', ').slice(0, 4).join(', ');
+      push({
+        subject: 'household', channel: 'visit', wa_id: null, household_key: hk,
+        name: `H.No. ${r.house_no}${r.section ? ', ' + r.section : ''}`,
+        source: 'roll',
+        reason: `${r.voters} voter${r.voters > 1 ? 's' : ''}, not yet engaged — introductory visit`,
+        detail: memberList + (r.voters > 4 ? ` +${r.voters - 4} more` : ''),
+        ticket_id: null, score: 8 + Math.min(r.voters, 12),
+      });
+    }
+  } catch (e) { console.error('outreach: households failed:', e.message); }
+
+  actions.sort((x, y) => y.score - x.score);
+  return actions.slice(0, 60);
+}
+
+app.get('/api/outreach/actions', (req, res) => {
+  try {
+    let actions = computeOutreachActions();
+    const { channel, source } = req.query;
+    if (channel && ['visit', 'call', 'message'].includes(channel)) actions = actions.filter((a) => a.channel === channel);
+    if (source && source !== 'all') actions = actions.filter((a) => a.source === source);
+    res.json({ actions, generated_at: Date.now() });
+  } catch (e) {
+    console.error('outreach actions failed:', e.message);
+    res.status(500).json({ error: 'could not compute outreach actions' });
+  }
+});
+
+// AI-drafted message / call plan / visit brief for one action (template fallback only).
+app.post('/api/outreach/actions/draft', express.json(), async (req, res) => {
+  const a = req.body || {};
+  const channel = ['visit', 'call', 'message'].includes(a.channel) ? a.channel : 'message';
+  const name = String(a.name || 'Citizen').slice(0, 80);
+  let draft = null;
+  try {
+    draft = await ai.draftOutreachMessage({
+      citizenName: name, channel,
+      reason: String(a.reason || '').slice(0, 200),
+      detail: String(a.detail || '').slice(0, 300),
+    });
+  } catch (e) { console.error('outreach draft failed:', e.message); }
+  if (!draft) {
+    const first = name.split(' ')[0] || 'there';
+    draft = channel === 'message'
+      ? `${first} ji, this is the constituency office checking in — ${String(a.reason || '').toLowerCase()}. Is there anything we can help with?`
+      : channel === 'call'
+        ? `Call ${first} ji. Opening: "Namaskar, calling from the constituency office." Points: 1) ${String(a.reason || '')}. 2) Ask if anything else is needed. 3) Note any follow-up.`
+        : `Visit ${name}. Why: ${String(a.reason || '')}. 1) Introduce yourself from the office. 2) Listen first, note issues. 3) Leave a contact number.`;
+  }
+  res.json({ draft });
+});
+
+app.post('/api/outreach/actions/done', express.json(), (req, res) => {
+  const b = req.body || {};
+  try {
+    db.prepare(`INSERT INTO outreach_log (wa_id, household_key, channel, reason, ticket_id, done_at, note)
+      VALUES (?,?,?,?,?,?,?)`).run(
+      b.wa_id || null, b.household_key || null, String(b.channel || 'message').slice(0, 20),
+      String(b.reason || '').slice(0, 200), b.ticket_id || null, Date.now(),
+      String(b.note || '').slice(0, 500) || null);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('outreach done failed:', e.message);
+    res.status(500).json({ error: 'could not log outreach action' });
+  }
 });
 
 app.get('/api/stats', (_req, res) => {
